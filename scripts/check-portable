@@ -26,6 +26,14 @@ for file in "${shell_files[@]}"; do
 done
 
 python3 -m py_compile bin/blue-hebrew-say bin/detect-text-language bin/omnivoice-say bin/pause-hotkey-daemon
+python3 - <<'PY'
+import runpy
+
+blue = runpy.run_path("bin/blue-hebrew-say")
+strip_language_tags = blue["strip_language_tags"]
+assert strip_language_tags("<he>shalom</he>") == "shalom"
+assert strip_language_tags("<he>foo</he> <en>bar</en>") == "foo bar"
+PY
 
 hebrew_detection="$(printf 'שלום עולם' | bin/detect-text-language)"
 printf '%s\n' "$hebrew_detection" | grep -F 'route=hebrew' >/dev/null

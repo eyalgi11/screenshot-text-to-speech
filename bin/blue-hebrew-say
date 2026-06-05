@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
+
+
+LANG_TAG_RE = re.compile(r"</?[a-zA-Z][a-zA-Z0-9_-]*>")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -20,6 +24,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--max-chunk-chars", type=int, default=80)
     p.add_argument("--chunk-gap-ms", type=int, default=180)
     return p
+
+
+def strip_language_tags(text: str) -> str:
+    return LANG_TAG_RE.sub("", text).strip()
 
 
 def ensure_packaged_vocab(onnx_dir: Path) -> None:
@@ -66,7 +74,11 @@ def main() -> int:
     pieces = []
     gap = np.zeros(int(tts.sample_rate * max(args.chunk_gap_ms, 0) / 1000), dtype=np.float32)
     for index, chunk in enumerate(chunks):
-        phonemized = text_processor.phonemize(chunk, args.language)
+        # Blue receives the language separately. Keep only phoneme characters here
+        # because the tokenizer normalizer can corrupt closing language tags.
+        phonemized = strip_language_tags(text_processor.phonemize(chunk, args.language))
+        if not phonemized:
+            continue
         samples, _durations = tts.batch(
             [phonemized],
             [args.language],

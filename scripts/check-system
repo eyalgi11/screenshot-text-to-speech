@@ -158,6 +158,40 @@ for pair in \
   fi
 done
 
+if [[ -x "$BLUE_PYTHON" && -r "$BLUE_RENIKUD_MODEL" && -r "$BLUE_ONNX_DIR/vocab.json" ]]; then
+  blue_phoneme_probe="$("$BLUE_PYTHON" - "$PROJECT_DIR" "$BLUE_RENIKUD_MODEL" "$BLUE_ONNX_DIR/vocab.json" 2>&1 <<'PY'
+import runpy
+import sys
+from pathlib import Path
+
+from blue_onnx import TextProcessor, UnicodeProcessor
+
+project_dir, renikud_model, vocab_json = sys.argv[1:]
+strip_language_tags = runpy.run_path(
+    str(Path(project_dir) / "bin" / "blue-hebrew-say")
+)["strip_language_tags"]
+
+processor = TextProcessor(renikud_model)
+unicode_processor = UnicodeProcessor(vocab_json)
+phonemes = strip_language_tags(processor.phonemize("שלום עולם", "he"))
+if "<" in phonemes or ">" in phonemes:
+    raise SystemExit(f"language tags leaked into phoneme text: {phonemes!r}")
+
+ids, mask = unicode_processor([phonemes], ["he"])
+length = int(mask.sum())
+unknown = int((ids[0, :length] == unicode_processor.pad_id).sum())
+if unknown:
+    raise SystemExit(f"phoneme text has {unknown} unknown tokenizer character(s): {phonemes!r}")
+PY
+)"
+  if [[ $? -eq 0 ]]; then
+    printf 'OK   Blue phonemes      renikud output is tokenizer-ready\n'
+  else
+    printf 'MISS Blue phonemes      %s\n' "$blue_phoneme_probe"
+    warn=1
+  fi
+fi
+
 if [[ $ok -ne 0 ]]; then
   printf '\nSystem check failed: install missing required commands.\n'
   exit 1
