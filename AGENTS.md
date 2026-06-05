@@ -15,6 +15,7 @@ scripts/record-reference-voice
 scripts/install-desktop-integration
 scripts/install-kde-shortcut
 scripts/install-pause-daemon
+scripts/install-wayland-evdev-daemon
 scripts/uninstall
 bin/screenshot-read
 bin/screenshot-read --cancel
@@ -39,5 +40,5 @@ Done means:
 3. `bin/screenshot-read` can select a region, OCR it, synthesize speech, and
    play the generated WAV.
 4. `scripts/check-portable` passes before publishing.
-5. The KDE launcher or X11 Pause daemon is installed, or a concrete desktop
-   integration blocker is documented.
+5. The KDE launcher, X11 Pause daemon, or Wayland evdev Pause daemon is
+   installed, or a concrete desktop integration blocker is documented.

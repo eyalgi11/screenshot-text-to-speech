@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""Listen for Linux KEY_PAUSE and toggle screenshot-read.
+
+KDE/Wayland should normally own global shortcuts, but some keyboards emit a
+real KEY_PAUSE event that does not reach KGlobalAccel. This daemon is a narrow
+fallback for that case. It needs read access to the configured /dev/input event
+device, so the installer runs it as a system service.
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import os
+import pwd
+import select
+import signal
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+EV_KEY = 0x01
+DEFAULT_KEY_CODE = 119  # Linux KEY_PAUSE
+INPUT_EVENT = struct.Struct("llHHi")
+PROJECT_DIR = Path(os.environ.get("STTS_PROJECT_DIR", Path(__file__).resolve().parents[1]))
+TARGET = PROJECT_DIR / "bin" / "screenshot-read"
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Wayland evdev Pause/Break hotkey daemon")
+    p.add_argument("--device", action="append", help="Input event device path")
+    p.add_argument("--user", default=os.environ.get("STTS_EVDEV_USER") or os.environ.get("SUDO_USER"))
+    p.add_argument("--key-code", type=int, default=int(os.environ.get("STTS_EVDEV_KEY_CODE", DEFAULT_KEY_CODE)))
+    p.add_argument("--debounce", type=float, default=float(os.environ.get("STTS_HOTKEY_DEBOUNCE_SECONDS", "0.8")))
+    return p
+
+
+def configured_devices(args: argparse.Namespace) -> list[Path]:
+    items: list[str] = []
+    if args.device:
+        items.extend(args.device)
+    if os.environ.get("STTS_EVDEV_DEVICES"):
+        items.extend(os.environ["STTS_EVDEV_DEVICES"].split())
+    if not items:
+        items.extend(
+            [
+                "/dev/input/by-id/*Keyboard*-event-kbd",
+                "/dev/input/by-id/*Keyboard*-event-if01",
+            ]
+        )
+
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for item in items:
+        matches = glob.glob(item) or [item]
+        for match in matches:
+            path = Path(match)
+            try:
+                resolved = str(path.resolve())
+            except OSError:
+                resolved = str(path)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            paths.append(path)
+    return paths
+
+
+def log(message: str) -> None:
+    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}", flush=True)
+
+
+def target_env(user: str) -> dict[str, str]:
+    pw = pwd.getpwnam(user)
+    runtime = Path(f"/run/user/{pw.pw_uid}")
+    wayland = os.environ.get("STTS_TARGET_WAYLAND_DISPLAY")
+    if not wayland:
+        sockets = sorted(p for p in runtime.glob("wayland-*") if not p.name.endswith(".lock"))
+        wayland = sockets[0].name if sockets else "wayland-0"
+
+    env = {
+        "HOME": pw.pw_dir,
+        "USER": user,
+        "LOGNAME": user,
+        "PATH": os.environ.get("STTS_TARGET_PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "XDG_RUNTIME_DIR": str(runtime),
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus",
+        "WAYLAND_DISPLAY": wayland,
+        "XDG_CURRENT_DESKTOP": "KDE",
+        "XDG_SESSION_TYPE": "wayland",
+        "KDE_FULL_SESSION": "true",
+        "KDE_SESSION_VERSION": "6",
+    }
+    display = os.environ.get("STTS_TARGET_DISPLAY") or os.environ.get("DISPLAY")
+    if display:
+        env["DISPLAY"] = display
+    return env
+
+
+def active_session_type(user: str | None) -> str | None:
+    if os.geteuid() != 0:
+        return os.environ.get("XDG_SESSION_TYPE")
+    if not user:
+        return None
+
+    try:
+        sessions = subprocess.run(
+            ["loginctl", "list-sessions", "--no-legend"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+
+    for line in sessions.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or parts[2] != user:
+            continue
+        session_id = parts[0]
+        active = subprocess.run(
+            ["loginctl", "show-session", session_id, "-p", "Active", "--value"],
+            check=False,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if active != "yes":
+            continue
+        session_type = subprocess.run(
+            ["loginctl", "show-session", session_id, "-p", "Type", "--value"],
+            check=False,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        return session_type or None
+    return None
+
+
+def launch_reader(user: str | None) -> None:
+    if not TARGET.exists():
+        raise FileNotFoundError(f"Missing target script: {TARGET}")
+
+    session_type = active_session_type(user)
+    if session_type and session_type != "wayland":
+        log(f"Ignoring hotkey because active session type is {session_type}, not wayland")
+        return
+    if not session_type:
+        log("Ignoring hotkey because no active session type was found")
+        return
+
+    if os.geteuid() == 0 and user:
+        env_args = [f"{key}={value}" for key, value in target_env(user).items()]
+        cmd = ["runuser", "-u", user, "--", "env", *env_args, str(TARGET), "--toggle"]
+    else:
+        cmd = [str(TARGET), "--toggle"]
+
+    log(f"Toggling {TARGET}")
+    subprocess.Popen(
+        cmd,
+        cwd=str(PROJECT_DIR),
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def open_devices(paths: list[Path]) -> dict[int, Path]:
+    opened: dict[int, Path] = {}
+    for path in paths:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError as exc:
+            log(f"Could not open {path}: {exc}")
+            continue
+        opened[fd] = path
+        log(f"Listening on {path}")
+    return opened
+
+
+def main() -> int:
+    args = parser().parse_args()
+    stop = False
+
+    def handle_stop(_signum: int, _frame: object) -> None:
+        nonlocal stop
+        stop = True
+
+    signal.signal(signal.SIGTERM, handle_stop)
+    signal.signal(signal.SIGINT, handle_stop)
+
+    devices = open_devices(configured_devices(args))
+    if not devices:
+        log("No input devices opened; exiting")
+        return 1
+
+    log(f"Daemon ready for EV_KEY code {args.key_code}")
+    last_trigger = 0.0
+    while not stop:
+        readable, _, _ = select.select(list(devices.keys()), [], [], 0.5)
+        for fd in readable:
+            try:
+                data = os.read(fd, INPUT_EVENT.size * 32)
+            except BlockingIOError:
+                continue
+            except OSError as exc:
+                log(f"Read failed on {devices[fd]}: {exc}")
+                continue
+
+            for offset in range(0, len(data) - INPUT_EVENT.size + 1, INPUT_EVENT.size):
+                _sec, _usec, event_type, code, value = INPUT_EVENT.unpack_from(data, offset)
+                if event_type != EV_KEY or code != args.key_code or value != 1:
+                    continue
+                now = time.monotonic()
+                if now - last_trigger < args.debounce:
+                    log("Ignoring repeated hotkey press inside debounce window")
+                    continue
+                last_trigger = now
+                launch_reader(args.user)
+
+    for fd in devices:
+        os.close(fd)
+    log("Daemon stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        log(f"Fatal error: {exc}")
+        print(exc, file=sys.stderr)
+        raise

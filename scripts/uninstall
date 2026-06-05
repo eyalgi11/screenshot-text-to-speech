@@ -8,14 +8,16 @@ DESKTOP_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/applications/io.github.eyal.s
 REMOVE_VENV=0
 REMOVE_CONFIG=0
 REMOVE_STATE=0
+REMOVE_SYSTEM=0
 
 usage() {
   cat <<'EOF'
-Usage: scripts/uninstall [--remove-venv] [--remove-config] [--remove-state]
+Usage: scripts/uninstall [--remove-venv] [--remove-config] [--remove-state] [--remove-system]
 
 Remove the user-level hotkey service and KDE launcher created by this project.
 The Python environment, local config, logs, and reference voices are kept unless
-you explicitly remove them with options.
+you explicitly remove them with options. Use --remove-system to remove the
+optional root Wayland evdev service.
 EOF
 }
 
@@ -24,6 +26,7 @@ while [[ $# -gt 0 ]]; do
     --remove-venv) REMOVE_VENV=1 ;;
     --remove-config) REMOVE_CONFIG=1 ;;
     --remove-state) REMOVE_STATE=1 ;;
+    --remove-system) REMOVE_SYSTEM=1 ;;
     -h|--help)
       usage
       exit 0
@@ -41,6 +44,19 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl --user disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
   rm -f -- "$USER_SYSTEMD_DIR/$SERVICE_NAME"
   systemctl --user daemon-reload >/dev/null 2>&1 || true
+fi
+
+if [[ "$REMOVE_SYSTEM" == "1" ]]; then
+  if command -v sudo >/dev/null 2>&1; then
+    sudo systemctl disable --now screenshot-text-to-speech-wayland-evdev.service >/dev/null 2>&1 || true
+    sudo rm -f -- /etc/systemd/system/screenshot-text-to-speech-wayland-evdev.service
+    sudo rm -f -- /etc/screenshot-text-to-speech/evdev.env
+    sudo rmdir --ignore-fail-on-non-empty /etc/screenshot-text-to-speech >/dev/null 2>&1 || true
+    sudo systemctl daemon-reload >/dev/null 2>&1 || true
+  else
+    echo "sudo is required for --remove-system." >&2
+    exit 1
+  fi
 fi
 
 rm -f -- "$DESKTOP_FILE"

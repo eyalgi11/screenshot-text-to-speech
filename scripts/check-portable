@@ -7,6 +7,7 @@ cd "$PROJECT_DIR"
 shell_files=(
   bin/screenshot-read
   bin/session-hotkey-service
+  scripts/install-wayland-evdev-daemon
   scripts/check-portable
   scripts/check-system
   scripts/disable-kde-shortcut-grab
@@ -25,7 +26,7 @@ for file in "${shell_files[@]}"; do
   bash -n "$file"
 done
 
-python3 -m py_compile bin/blue-hebrew-say bin/detect-text-language bin/omnivoice-say bin/pause-hotkey-daemon
+python3 -m py_compile bin/blue-hebrew-say bin/detect-text-language bin/omnivoice-say bin/pause-hotkey-daemon bin/wayland-pause-evdev-daemon
 python3 - <<'PY'
 import runpy
 

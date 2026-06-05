@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+SERVICE_NAME="screenshot-text-to-speech-wayland-evdev.service"
+CONFIG_DIR="/etc/screenshot-text-to-speech"
+CONFIG_FILE="$CONFIG_DIR/evdev.env"
+SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
+TARGET_USER="${STTS_EVDEV_USER:-${SUDO_USER:-${USER:-}}}"
+DEVICE="${STTS_EVDEV_DEVICE:-/dev/input/by-id/usb-SEMICO_USB_Keyboard-event-kbd}"
+
+usage() {
+  cat <<EOF
+Usage: scripts/install-wayland-evdev-daemon [--user USER] [--device /dev/input/eventX]
+
+Install a root systemd service that listens for Linux KEY_PAUSE on Wayland and
+launches this user's screenshot-text-to-speech command.
+
+Default device:
+  $DEVICE
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --user)
+      TARGET_USER="${2:-}"
+      shift
+      ;;
+    --device)
+      DEVICE="${2:-}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [[ -z "$TARGET_USER" ]]; then
+  echo "Could not determine target user. Pass --user USER." >&2
+  exit 2
+fi
+
+if [[ ! -e "$DEVICE" ]]; then
+  echo "Input device does not exist: $DEVICE" >&2
+  echo "Use evtest to identify the keyboard device, then pass --device." >&2
+  exit 1
+fi
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf -- "$tmpdir"' EXIT
+
+cat >"$tmpdir/evdev.env" <<EOF
+STTS_PROJECT_DIR=$PROJECT_DIR
+STTS_EVDEV_USER=$TARGET_USER
+STTS_EVDEV_DEVICES=$DEVICE
+STTS_EVDEV_KEY_CODE=119
+STTS_HOTKEY_DEBOUNCE_SECONDS=0.8
+EOF
+
+cat >"$tmpdir/$SERVICE_NAME" <<EOF
+[Unit]
+Description=Screenshot Text To Speech Wayland evdev Pause/Break hotkey
+After=graphical.target systemd-logind.service
+
+[Service]
+Type=simple
+EnvironmentFile=$CONFIG_FILE
+ExecStart=/usr/bin/python3 $PROJECT_DIR/bin/wayland-pause-evdev-daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo install -d -m 0755 "$CONFIG_DIR"
+sudo install -m 0644 "$tmpdir/evdev.env" "$CONFIG_FILE"
+sudo install -m 0644 "$tmpdir/$SERVICE_NAME" "$SERVICE_FILE"
+sudo systemctl daemon-reload
+sudo systemctl enable --now "$SERVICE_NAME"
+sudo systemctl --no-pager --full status "$SERVICE_NAME"

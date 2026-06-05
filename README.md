@@ -19,6 +19,9 @@ Pause/Break integration is session-aware:
 - X11 uses a small Xlib daemon for the physical Pause/Break key.
 - KDE Wayland uses KDE's global shortcut system, because Wayland blocks raw
   global key grabs by design.
+- If KDE Wayland does not deliver the physical `KEY_PAUSE` shortcut, install
+  the optional evdev system daemon. It listens only for Linux `KEY_PAUSE` on the
+  configured keyboard event device and launches the same user command.
 
 ## Quick Install
 
@@ -55,6 +58,13 @@ does not already exist. With `--hotkey`, it installs a user systemd service that
 uses the X11 daemon on X11 and the KDE global shortcut on KDE Wayland.
 With `--hebrew-blue`, it also creates `.venv-blue`, installs BlueTTS/Blue ONNX,
 and downloads the local Hebrew model files.
+
+If Pause/Break does not fire on KDE Wayland but `evtest` shows `KEY_PAUSE`, add
+the evdev fallback:
+
+```sh
+scripts/install-wayland-evdev-daemon --device /dev/input/by-id/usb-SEMICO_USB_Keyboard-event-kbd
+```
 
 ## Run
 
@@ -145,6 +155,23 @@ It installs a user-level service:
 - on KDE Wayland, it installs the KDE global shortcut and stays alive as a
   simple status service.
 
+On some KDE Wayland setups the physical Pause/Break key reaches the kernel as
+`KEY_PAUSE` but KDE GlobalAccel does not trigger the launcher. Verify with:
+
+```sh
+sudo evtest /dev/input/by-id/usb-SEMICO_USB_Keyboard-event-kbd
+```
+
+If the press shows `code 119 (KEY_PAUSE)`, install the evdev fallback:
+
+```sh
+scripts/install-wayland-evdev-daemon --device /dev/input/by-id/usb-SEMICO_USB_Keyboard-event-kbd
+```
+
+This creates a root systemd service named
+`screenshot-text-to-speech-wayland-evdev.service` because `/dev/input` is not
+readable by normal users on many systems.
+
 The historical direct installer still exists:
 
 ```sh
@@ -213,6 +240,12 @@ Optional cleanup:
 
 ```sh
 scripts/uninstall --remove-venv --remove-config --remove-state
+```
+
+Remove the optional Wayland evdev system service too:
+
+```sh
+scripts/uninstall --remove-system
 ```
 
 ## Privacy
