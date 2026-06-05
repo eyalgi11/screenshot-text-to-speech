@@ -95,6 +95,67 @@ else
   printf 'OK   voice mode         OmniVoice auto voice\n'
 fi
 
+printf '\nHebrew TTS routing:\n'
+printf 'OK   hebrew engine      %s\n' "${STTS_HEBREW_TTS_ENGINE:-auto}"
+printf 'OK   hebrew threshold   %s\n' "${STTS_HEBREW_ROUTE_THRESHOLD:-0.35}"
+printf 'OK   hebrew min chars   %s\n' "${STTS_HEBREW_ROUTE_MIN_CHARS:-3}"
+printf 'OK   Blue speed         %s\n' "${STTS_BLUE_SPEED:-1.05}"
+printf 'OK   Blue total step    %s\n' "${STTS_BLUE_TOTAL_STEP:-16}"
+printf 'OK   hebrew detector    '
+if printf 'שלום עולם' | "$PYTHON" "$PROJECT_DIR/bin/detect-text-language" | grep -F 'route=hebrew' >/dev/null; then
+  printf 'routes Hebrew text to Hebrew TTS\n'
+else
+  printf 'failed\n'
+  warn=1
+fi
+
+BLUE_ONNX_DIR="${STTS_BLUE_ONNX_DIR:-$PROJECT_DIR/models/blue-onnx-v2}"
+BLUE_STYLE_JSON="${STTS_BLUE_STYLE_JSON:-$PROJECT_DIR/models/blue-voices/female1.json}"
+BLUE_RENIKUD_MODEL="${STTS_BLUE_RENIKUD_MODEL:-$PROJECT_DIR/models/renikud/model.onnx}"
+BLUE_PYTHON="${STTS_BLUE_PYTHON:-$PROJECT_DIR/.venv-blue/bin/python}"
+blue_required=0
+if [[ "${STTS_HEBREW_TTS_ENGINE:-auto}" == "blue" ]]; then
+  blue_required=1
+fi
+
+if [[ -x "$BLUE_PYTHON" ]]; then
+  printf 'OK   blue python        %s\n' "$BLUE_PYTHON"
+else
+  if [[ $blue_required -eq 1 ]]; then
+    printf 'MISS blue python        %s\n' "$BLUE_PYTHON"
+    warn=1
+  else
+    printf 'INFO blue python        %s (optional; run scripts/setup-hebrew-blue)\n' "$BLUE_PYTHON"
+  fi
+fi
+if [[ -x "$BLUE_PYTHON" ]] && "$BLUE_PYTHON" -c "import blue_onnx" >/dev/null 2>&1; then
+  printf 'OK   python:blue_onnx\n'
+else
+  if [[ $blue_required -eq 1 ]]; then
+    printf 'MISS python:blue_onnx      run scripts/setup-hebrew-blue for dedicated Hebrew TTS\n'
+    warn=1
+  else
+    printf 'INFO python:blue_onnx      optional dedicated Hebrew TTS is not installed\n'
+  fi
+fi
+for pair in \
+  "Blue ONNX dir:$BLUE_ONNX_DIR" \
+  "Blue style JSON:$BLUE_STYLE_JSON" \
+  "Blue renikud model:$BLUE_RENIKUD_MODEL"; do
+  label="${pair%%:*}"
+  path="${pair#*:}"
+  if [[ -e "$path" ]]; then
+    printf 'OK   %-18s %s\n' "$label" "$path"
+  else
+    if [[ $blue_required -eq 1 ]]; then
+      printf 'MISS %-18s %s\n' "$label" "$path"
+      warn=1
+    else
+      printf 'INFO %-18s %s (optional)\n' "$label" "$path"
+    fi
+  fi
+done
+
 if [[ $ok -ne 0 ]]; then
   printf '\nSystem check failed: install missing required commands.\n'
   exit 1

@@ -1,13 +1,13 @@
 # Screenshot Text To Speech
 
 Press Pause/Break, select a screen region with Spectacle, OCR the image with
-Tesseract, synthesize the text locally with OmniVoice, and play it through
-PipeWire. Press Pause/Break again while it is running to cancel capture, OCR,
-speech generation, or playback.
+Tesseract, synthesize the text locally, and play it through PipeWire. Press
+Pause/Break again while it is running to cancel capture, OCR, speech generation,
+or playback.
 
-This uses the core `k2-fsa/OmniVoice` model integration, not OmniVoice Studio.
-The core model is the better fit here because it has a direct Python API for
-`text + optional reference voice -> wav`.
+English/default speech uses the core `k2-fsa/OmniVoice` model integration, not
+OmniVoice Studio. Hebrew-heavy OCR text can be routed to BlueTTS/Blue ONNX, a
+local Hebrew-first TTS model, for better Hebrew pronunciation.
 
 ## Platform
 
@@ -33,6 +33,7 @@ For Hebrew OCR too:
 
 ```sh
 scripts/install-system-deps --install --hebrew
+scripts/install --hebrew-blue
 ```
 
 For an NVIDIA GPU with CUDA 12.8 PyTorch wheels:
@@ -52,6 +53,8 @@ The installer creates `.venv`, installs OmniVoice from
 daemon, and creates `config/screenshot-tts.env` from `config/example.env` if it
 does not already exist. With `--hotkey`, it installs a user systemd service that
 uses the X11 daemon on X11 and the KDE global shortcut on KDE Wayland.
+With `--hebrew-blue`, it also creates `.venv-blue`, installs BlueTTS/Blue ONNX,
+and downloads the local Hebrew model files.
 
 ## Run
 
@@ -98,6 +101,34 @@ You can also leave the reference fields blank and use voice design:
 
 ```sh
 STTS_OMNIVOICE_INSTRUCT="male, elderly, very low pitch, American accent"
+```
+
+## Hebrew TTS
+
+For better Hebrew, install the dedicated Hebrew route:
+
+```sh
+scripts/setup-hebrew-blue
+```
+
+Then set:
+
+```sh
+STTS_HEBREW_TTS_ENGINE=blue
+STTS_OCR_LANG=eng+heb
+```
+
+After OCR, the app counts Hebrew letters without logging the captured text. If
+the Hebrew ratio is at least `STTS_HEBREW_ROUTE_THRESHOLD` and there are at
+least `STTS_HEBREW_ROUTE_MIN_CHARS` Hebrew characters, it uses
+`bin/blue-hebrew-say`; otherwise it keeps using OmniVoice.
+
+Default model locations:
+
+```sh
+models/blue-onnx-v2
+models/blue-voices/female1.json
+models/renikud/model.onnx
 ```
 
 ## Desktop Integration
@@ -149,6 +180,8 @@ Important options:
 - `STTS_OMNIVOICE_DEVICE=cuda:0` to force a GPU, or leave empty for auto.
 - `STTS_OMNIVOICE_SPEED=1.0`.
 - `STTS_OMNIVOICE_NUM_STEP=16` for faster, rougher synthesis; `32` for default quality.
+- `STTS_HEBREW_TTS_ENGINE=auto`, `blue`, or `omnivoice`.
+- `STTS_HEBREW_ROUTE_THRESHOLD=0.35`.
 - `STTS_KEEP_ARTIFACTS=1` to keep temporary screenshots/OCR/audio while debugging.
 
 ## Checks
@@ -165,8 +198,9 @@ Local machine readiness:
 scripts/check-system
 ```
 
-The checker does not download OmniVoice model weights. The first real generation
-may download the model from Hugging Face into the normal cache.
+The checker does not download OmniVoice model weights. The first real OmniVoice
+generation may download the model from Hugging Face into the normal cache.
+BlueTTS model files are downloaded by `scripts/setup-hebrew-blue`.
 
 ## Uninstall
 

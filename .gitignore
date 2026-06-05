@@ -1,10 +1,12 @@
 .agents/
 .codex/
 .venv/
+.venv-blue/
 .mypy_cache/
 .pytest_cache/
 __pycache__/
 *.pyc
+models/
 
 # Local machine/user configuration.
 config/screenshot-tts.env

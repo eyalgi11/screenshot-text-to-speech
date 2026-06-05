@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Read text from stdin and synthesize it with BlueTTS/Blue ONNX."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Synthesize stdin with BlueTTS")
+    p.add_argument("--output", required=True, help="Output WAV path")
+    p.add_argument("--onnx-dir", required=True, help="Blue ONNX model directory")
+    p.add_argument("--style-json", required=True, help="Blue voice style JSON")
+    p.add_argument("--renikud-path", required=True, help="renikud Hebrew G2P model.onnx")
+    p.add_argument("--language", default="he", help="BlueTTS language code")
+    p.add_argument("--speed", type=float, default=1.05)
+    p.add_argument("--total-step", type=int, default=16)
+    return p
+
+
+def ensure_packaged_vocab(onnx_dir: Path) -> None:
+    import blue_onnx
+
+    source = onnx_dir / "vocab.json"
+    target = Path(blue_onnx.__file__).resolve().parent.parent / "vocab.json"
+    if target.exists() or not source.exists():
+        return
+    target.write_bytes(source.read_bytes())
+
+
+def main() -> int:
+    args = parser().parse_args()
+    text = sys.stdin.read().strip()
+    if not text:
+        print("No text received on stdin.", file=sys.stderr)
+        return 2
+
+    try:
+        import soundfile as sf
+        from blue_onnx import load_text_to_speech, load_voice_style
+    except Exception as exc:  # pragma: no cover - depends on local ML env
+        print(f"Unable to import BlueTTS dependencies: {exc}", file=sys.stderr)
+        return 3
+
+    output = Path(args.output).expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    onnx_dir = Path(args.onnx_dir).expanduser()
+    style_json = Path(args.style_json).expanduser()
+    renikud_path = Path(args.renikud_path).expanduser()
+
+    ensure_packaged_vocab(onnx_dir)
+    tts = load_text_to_speech(str(onnx_dir))
+    style = load_voice_style([str(style_json)])
+
+    print(f"Generating BlueTTS speech in {args.language}...", file=sys.stderr)
+    samples, _durations = tts.batch(
+        [text],
+        [args.language],
+        style,
+        total_step=args.total_step,
+        speed=args.speed,
+    )
+    if getattr(samples, "ndim", 1) > 1:
+        samples = samples[0]
+    sf.write(str(output), samples, tts.sample_rate)
+    print(f"Saved {output}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

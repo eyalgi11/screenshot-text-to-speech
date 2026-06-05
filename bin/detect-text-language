@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Classify stdin as Hebrew-heavy enough for the Hebrew TTS route."""
+
+from __future__ import annotations
+
+import argparse
+import unicodedata
+import sys
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Detect Hebrew-heavy text from stdin")
+    p.add_argument("--hebrew-threshold", type=float, default=0.35)
+    p.add_argument("--hebrew-min-chars", type=int, default=3)
+    return p
+
+
+def is_hebrew(ch: str) -> bool:
+    return "\u0590" <= ch <= "\u05ff"
+
+
+def is_letter(ch: str) -> bool:
+    return unicodedata.category(ch).startswith("L")
+
+
+def main() -> int:
+    args = parser().parse_args()
+    text = sys.stdin.read()
+    hebrew = sum(1 for ch in text if is_hebrew(ch))
+    letters = sum(1 for ch in text if is_letter(ch))
+    ratio = (hebrew / letters) if letters else 0.0
+    route = "hebrew" if hebrew >= args.hebrew_min_chars and ratio >= args.hebrew_threshold else "default"
+
+    print(f"route={route}")
+    print(f"hebrew_chars={hebrew}")
+    print(f"letter_chars={letters}")
+    print(f"hebrew_ratio={ratio:.3f}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

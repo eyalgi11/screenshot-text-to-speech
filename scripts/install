@@ -4,6 +4,7 @@ set -Eeuo pipefail
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 WITH_SYSTEM_DEPS=0
 WITH_HEBREW=0
+WITH_HEBREW_BLUE=0
 HOTKEY=0
 KDE_SHORTCUT=0
 RUN_CHECK=1
@@ -19,6 +20,7 @@ optionally install the Pause/Break hotkey integration.
 Options:
   --system-deps    Install native distro packages first
   --hebrew         Include Hebrew OCR packages when installing system deps
+  --hebrew-blue    Install BlueTTS/Blue ONNX for dedicated Hebrew TTS
   --cpu            Install CPU PyTorch wheels
   --cuda128        Install CUDA 12.8 PyTorch wheels
   --skip-torch     Do not install PyTorch
@@ -35,6 +37,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --hebrew)
       WITH_HEBREW=1
+      ;;
+    --hebrew-blue)
+      WITH_HEBREW_BLUE=1
       ;;
     --cpu)
       TORCH_MODE="cpu"
@@ -79,6 +84,10 @@ if [[ -n "$TORCH_MODE" ]]; then
   export STTS_TORCH_MODE="$TORCH_MODE"
 fi
 scripts/setup-omnivoice
+
+if [[ "$WITH_HEBREW_BLUE" == "1" || "${STTS_INSTALL_HEBREW_BLUE:-0}" == "1" ]]; then
+  scripts/setup-hebrew-blue
+fi
 
 if [[ ! -f config/screenshot-tts.env ]]; then
   cp config/example.env config/screenshot-tts.env

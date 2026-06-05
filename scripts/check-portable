@@ -16,6 +16,7 @@ shell_files=(
   scripts/install-pause-daemon
   scripts/install-system-deps
   scripts/record-reference-voice
+  scripts/setup-hebrew-blue
   scripts/setup-omnivoice
   scripts/uninstall
 )
@@ -24,7 +25,12 @@ for file in "${shell_files[@]}"; do
   bash -n "$file"
 done
 
-python3 -m py_compile bin/omnivoice-say bin/pause-hotkey-daemon
+python3 -m py_compile bin/blue-hebrew-say bin/detect-text-language bin/omnivoice-say bin/pause-hotkey-daemon
+
+hebrew_detection="$(printf 'שלום עולם' | bin/detect-text-language)"
+printf '%s\n' "$hebrew_detection" | grep -F 'route=hebrew' >/dev/null
+english_detection="$(printf 'Hello world' | bin/detect-text-language)"
+printf '%s\n' "$english_detection" | grep -F 'route=default' >/dev/null
 
 forbidden_homes=("${STTS_PORTABLE_FORBIDDEN_HOME:-/home/${STTS_PORTABLE_FORBIDDEN_USER:-eyal}}")
 if [[ -n "${HOME:-}" && "$HOME" != "${forbidden_homes[0]}" ]]; then

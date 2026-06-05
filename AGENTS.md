@@ -10,6 +10,7 @@ scripts/check-system
 scripts/check-portable
 scripts/install
 scripts/setup-omnivoice
+scripts/setup-hebrew-blue
 scripts/record-reference-voice
 scripts/install-desktop-integration
 scripts/install-kde-shortcut
@@ -34,8 +35,9 @@ voices/reference.txt
 Done means:
 
 1. `scripts/check-system` reports Spectacle, OCR, playback, and OmniVoice ready.
-2. `bin/screenshot-read` can select a region, OCR it, synthesize speech, and
+2. Hebrew-heavy OCR routes to BlueTTS when `STTS_HEBREW_TTS_ENGINE=blue`.
+3. `bin/screenshot-read` can select a region, OCR it, synthesize speech, and
    play the generated WAV.
-3. `scripts/check-portable` passes before publishing.
-4. The KDE launcher or X11 Pause daemon is installed, or a concrete desktop
+4. `scripts/check-portable` passes before publishing.
+5. The KDE launcher or X11 Pause daemon is installed, or a concrete desktop
    integration blocker is documented.
