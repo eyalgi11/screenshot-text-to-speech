@@ -182,7 +182,7 @@ Important options:
 - `STTS_OMNIVOICE_NUM_STEP=16` for faster, rougher synthesis; `32` for default quality.
 - `STTS_HEBREW_TTS_ENGINE=auto`, `blue`, or `omnivoice`.
 - `STTS_HEBREW_ROUTE_THRESHOLD=0.35`.
-- `STTS_BLUE_SPEED=0.5` and `STTS_BLUE_MAX_CHUNK_CHARS=80` to keep Hebrew paragraphs intelligible.
+- `STTS_BLUE_SPEED=1.05` and `STTS_BLUE_MAX_CHUNK_CHARS=80` to keep Hebrew paragraphs intelligible.
 - `STTS_KEEP_ARTIFACTS=1` to keep temporary screenshots/OCR/audio while debugging.
 
 ## Checks

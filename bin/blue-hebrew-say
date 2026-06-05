@@ -15,7 +15,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--style-json", required=True, help="Blue voice style JSON")
     p.add_argument("--renikud-path", required=True, help="renikud Hebrew G2P model.onnx")
     p.add_argument("--language", default="he", help="BlueTTS language code")
-    p.add_argument("--speed", type=float, default=0.5)
+    p.add_argument("--speed", type=float, default=1.05)
     p.add_argument("--total-step", type=int, default=16)
     p.add_argument("--max-chunk-chars", type=int, default=80)
     p.add_argument("--chunk-gap-ms", type=int, default=180)
@@ -42,7 +42,7 @@ def main() -> int:
     try:
         import soundfile as sf
         import numpy as np
-        from blue_onnx import chunk_text, load_text_to_speech, load_voice_style
+        from blue_onnx import TextProcessor, chunk_text, load_text_to_speech, load_voice_style
     except Exception as exc:  # pragma: no cover - depends on local ML env
         print(f"Unable to import BlueTTS dependencies: {exc}", file=sys.stderr)
         return 3
@@ -56,6 +56,7 @@ def main() -> int:
     ensure_packaged_vocab(onnx_dir)
     tts = load_text_to_speech(str(onnx_dir))
     style = load_voice_style([str(style_json)])
+    text_processor = TextProcessor(str(renikud_path))
 
     chunks = chunk_text(text, max_len=args.max_chunk_chars) or [text]
     print(
@@ -65,8 +66,9 @@ def main() -> int:
     pieces = []
     gap = np.zeros(int(tts.sample_rate * max(args.chunk_gap_ms, 0) / 1000), dtype=np.float32)
     for index, chunk in enumerate(chunks):
+        phonemized = text_processor.phonemize(chunk, args.language)
         samples, _durations = tts.batch(
-            [chunk],
+            [phonemized],
             [args.language],
             style,
             total_step=args.total_step,
