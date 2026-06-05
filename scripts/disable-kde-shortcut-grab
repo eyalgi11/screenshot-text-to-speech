@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+QUIET=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --quiet)
+      QUIET=1
+      ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: scripts/disable-kde-shortcut-grab [--quiet]
+
+Remove the KDE global Pause/Break shortcut for this app. This lets the X11
+Xlib daemon own the physical key without KGlobalAccel keeping a stale grab.
+EOF
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+DESKTOP_ID="io.github.eyal.screenshot-text-to-speech.desktop"
+DESKTOP_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/applications/$DESKTOP_ID"
+
+if [[ -f "$DESKTOP_FILE" ]]; then
+  sed -i '/^X-KDE-Shortcuts=/d' "$DESKTOP_FILE"
+  if command -v kbuildsycoca6 >/dev/null 2>&1; then
+    kbuildsycoca6 >/dev/null 2>&1 || true
+  fi
+fi
+
+if command -v qdbus6 >/dev/null 2>&1; then
+  qdbus6 org.kde.kglobalaccel /kglobalaccel org.kde.KGlobalAccel.unregister \
+    "$DESKTOP_ID" _launch >/dev/null 2>&1 || true
+fi
+
+if [[ "$QUIET" != "1" ]]; then
+  echo "KDE global shortcut grab removed for $DESKTOP_ID."
+fi

@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/screenshot-text-to-speech"
+LOG_FILE="$STATE_DIR/session-hotkey-service.log"
+ONESHOT="${STTS_HOTKEY_SERVICE_ONESHOT:-0}"
+
+mkdir -p "$STATE_DIR"
+
+log() {
+  printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG_FILE"
+}
+
+loginctl_session_type() {
+  command -v loginctl >/dev/null 2>&1 || return 1
+
+  if [[ -n "${XDG_SESSION_ID:-}" ]]; then
+    loginctl show-session "$XDG_SESSION_ID" -p Type --value 2>/dev/null || true
+    return 0
+  fi
+
+  local sid uid user active session_type current_uid
+  current_uid="$(id -u)"
+  while read -r sid uid user _rest; do
+    [[ "$uid" == "$current_uid" || "$user" == "${USER:-}" ]] || continue
+    active="$(loginctl show-session "$sid" -p Active --value 2>/dev/null || true)"
+    [[ "$active" == "yes" ]] || continue
+    session_type="$(loginctl show-session "$sid" -p Type --value 2>/dev/null || true)"
+    [[ -n "$session_type" ]] || continue
+    printf '%s\n' "$session_type"
+    return 0
+  done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+}
+
+detect_session_type() {
+  local session_type
+  session_type="${STTS_SESSION_TYPE:-${XDG_SESSION_TYPE:-}}"
+  if [[ -z "$session_type" ]]; then
+    session_type="$(loginctl_session_type | head -n 1 || true)"
+  fi
+  if [[ -z "$session_type" ]]; then
+    if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+      session_type="wayland"
+    elif [[ -n "${DISPLAY:-}" ]]; then
+      session_type="x11"
+    else
+      session_type="unknown"
+    fi
+  fi
+  printf '%s\n' "$session_type"
+}
+
+wait_forever() {
+  trap 'log "Session hotkey service stopped"; exit 0' INT TERM
+  while :; do
+    sleep 3600 &
+    wait "$!" || true
+  done
+}
+
+run_wayland() {
+  log "Detected Wayland; using KDE global shortcut integration"
+  "$PROJECT_DIR/scripts/install-kde-shortcut" --quiet
+  log "Wayland KDE shortcut is configured"
+  [[ "$ONESHOT" == "1" ]] && exit 0
+  wait_forever
+}
+
+run_x11() {
+  local python
+  log "Detected X11; using Xlib Pause/Break daemon"
+  "$PROJECT_DIR/scripts/disable-kde-shortcut-grab" --quiet || true
+  [[ "$ONESHOT" == "1" ]] && exit 0
+  python="$PROJECT_DIR/.venv/bin/python"
+  if [[ -x "$python" ]]; then
+    exec "$python" "$PROJECT_DIR/bin/pause-hotkey-daemon"
+  fi
+  exec "$PROJECT_DIR/bin/pause-hotkey-daemon"
+}
+
+case "$(detect_session_type)" in
+  wayland)
+    run_wayland
+    ;;
+  x11|"")
+    run_x11
+    ;;
+  *)
+    log "Could not detect a supported session type. XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-unset} DISPLAY=${DISPLAY:-unset} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-unset}"
+    exit 2
+    ;;
+esac

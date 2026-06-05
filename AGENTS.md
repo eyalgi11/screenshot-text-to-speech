@@ -11,6 +11,7 @@ scripts/check-portable
 scripts/install
 scripts/setup-omnivoice
 scripts/record-reference-voice
+scripts/install-desktop-integration
 scripts/install-kde-shortcut
 scripts/install-pause-daemon
 scripts/uninstall

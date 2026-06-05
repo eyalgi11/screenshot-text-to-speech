@@ -11,6 +11,29 @@ APPLICATIONS_DIR="$DATA_HOME/applications"
 DESKTOP_FILE="$APPLICATIONS_DIR/$DESKTOP_ID"
 SHORTCUT_NAME="${STTS_KDE_SHORTCUT:-Pause}"
 QT_KEY_CODE="${STTS_KDE_SHORTCUT_QT_KEY:-16777224}"
+QUIET=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --quiet)
+      QUIET=1
+      ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: scripts/install-kde-shortcut [--quiet]
+
+Install the KDE global shortcut launcher. This is the Wayland-compatible
+integration path because KDE owns global shortcuts on Wayland.
+EOF
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
 
 mkdir -p "$APPLICATIONS_DIR"
 
@@ -19,7 +42,7 @@ cat > "$DESKTOP_FILE" <<EOF
 Name=$APP_NAME
 GenericName=Screenshot OCR Text To Speech
 Comment=Select screen text and read it aloud
-Exec=$PROJECT_DIR/bin/screenshot-read
+Exec=$PROJECT_DIR/bin/screenshot-read --toggle
 Icon=preferences-desktop-accessibility
 Type=Application
 Terminal=false
@@ -42,6 +65,11 @@ if command -v kwriteconfig6 >/dev/null 2>&1; then
   kwriteconfig6 --file kglobalshortcutsrc --group "$DESKTOP_ID" --key "_launch" "$SHORTCUT_NAME,none,$APP_LABEL"
 fi
 
+if [[ "${STTS_KDE_SKIP_LIVE:-0}" == "1" ]]; then
+  [[ "$QUIET" == "1" ]] || echo "Installed $APP_NAME and skipped live KDE assignment."
+  exit 0
+fi
+
 if command -v gdbus >/dev/null 2>&1; then
   gdbus call --session --dest org.kde.kglobalaccel --object-path /kglobalaccel \
     --method org.kde.KGlobalAccel.doRegister \
@@ -51,7 +79,7 @@ if command -v gdbus >/dev/null 2>&1; then
     --method org.kde.KGlobalAccel.setShortcutKeys \
     "['$DESKTOP_ID', '_launch', '$APP_NAME', '$APP_LABEL']" \
     "[([$QT_KEY_CODE, 0, 0, 0],)]" 4 >/dev/null; then
-    echo "Installed $APP_NAME and assigned $SHORTCUT_NAME."
+    [[ "$QUIET" == "1" ]] || echo "Installed $APP_NAME and assigned $SHORTCUT_NAME."
   else
     echo "Installed $APP_NAME, but KDE did not accept the live shortcut assignment." >&2
     echo "Open System Settings -> Keyboard -> Shortcuts and assign $SHORTCUT_NAME manually." >&2

@@ -6,9 +6,12 @@ cd "$PROJECT_DIR"
 
 shell_files=(
   bin/screenshot-read
+  bin/session-hotkey-service
   scripts/check-portable
   scripts/check-system
+  scripts/disable-kde-shortcut-grab
   scripts/install
+  scripts/install-desktop-integration
   scripts/install-kde-shortcut
   scripts/install-pause-daemon
   scripts/install-system-deps
@@ -46,5 +49,33 @@ for home_path in "${forbidden_homes[@]}"; do
     exit 1
   fi
 done
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf -- "$tmpdir"' EXIT
+
+XDG_DATA_HOME="$tmpdir/data" \
+XDG_CONFIG_HOME="$tmpdir/config" \
+XDG_STATE_HOME="$tmpdir/state" \
+STTS_SESSION_TYPE=wayland \
+STTS_HOTKEY_SERVICE_ONESHOT=1 \
+STTS_KDE_SKIP_LIVE=1 \
+  bin/session-hotkey-service
+
+desktop_file="$tmpdir/data/applications/io.github.eyal.screenshot-text-to-speech.desktop"
+grep -F "Exec=$PROJECT_DIR/bin/screenshot-read --toggle" "$desktop_file" >/dev/null
+grep -F "X-KDE-Shortcuts=Pause" "$desktop_file" >/dev/null
+
+printf 'X-KDE-Shortcuts=Pause\n' >>"$desktop_file"
+XDG_DATA_HOME="$tmpdir/data" \
+XDG_CONFIG_HOME="$tmpdir/config" \
+XDG_STATE_HOME="$tmpdir/state" \
+STTS_SESSION_TYPE=x11 \
+STTS_HOTKEY_SERVICE_ONESHOT=1 \
+  bin/session-hotkey-service
+
+if grep -F "X-KDE-Shortcuts=Pause" "$desktop_file" >/dev/null; then
+  echo "X11 integration did not remove the KDE Pause shortcut grab." >&2
+  exit 1
+fi
 
 echo "Portable checks passed."

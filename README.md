@@ -11,10 +11,14 @@ The core model is the better fit here because it has a direct Python API for
 
 ## Platform
 
-Tested on KDE Plasma X11 with Spectacle and PipeWire. The manual command should
-work on any Linux desktop that can run Spectacle. The built-in Pause/Break
-daemon is X11-only; on Wayland, use the KDE launcher shortcut or run the script
-manually until a Wayland-specific hotkey path is added.
+Tested on KDE Plasma with Spectacle and PipeWire. The manual command should
+work on any Linux desktop that can run Spectacle.
+
+Pause/Break integration is session-aware:
+
+- X11 uses a small Xlib daemon for the physical Pause/Break key.
+- KDE Wayland uses KDE's global shortcut system, because Wayland blocks raw
+  global key grabs by design.
 
 ## Quick Install
 
@@ -46,7 +50,8 @@ scripts/install --cpu
 The installer creates `.venv`, installs OmniVoice from
 `https://github.com/k2-fsa/OmniVoice`, installs `python-xlib` for the X11 hotkey
 daemon, and creates `config/screenshot-tts.env` from `config/example.env` if it
-does not already exist.
+does not already exist. With `--hotkey`, it installs a user systemd service that
+uses the X11 daemon on X11 and the KDE global shortcut on KDE Wayland.
 
 ## Run
 
@@ -97,15 +102,28 @@ STTS_OMNIVOICE_INSTRUCT="male, elderly, very low pitch, American accent"
 
 ## Desktop Integration
 
-The preferred X11 integration is the user-level Pause/Break daemon:
+The preferred integration is session-aware:
+
+```sh
+scripts/install-desktop-integration
+```
+
+It installs a user-level service:
+
+- on X11, it removes KDE's global Pause grab and runs the Xlib daemon;
+- on KDE Wayland, it installs the KDE global shortcut and stays alive as a
+  simple status service.
+
+The historical direct installer still exists:
 
 ```sh
 scripts/install-pause-daemon
 ```
 
-It logs to:
+Logs:
 
 ```sh
+~/.local/state/screenshot-text-to-speech/session-hotkey-service.log
 ~/.local/state/screenshot-text-to-speech/pause-hotkey-daemon.log
 ```
 

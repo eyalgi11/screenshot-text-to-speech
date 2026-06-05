@@ -22,8 +22,8 @@ Options:
   --cpu            Install CPU PyTorch wheels
   --cuda128        Install CUDA 12.8 PyTorch wheels
   --skip-torch     Do not install PyTorch
-  --hotkey         Install the X11 Pause/Break systemd user daemon
-  --kde-shortcut   Install the KDE launcher shortcut instead of the X11 daemon
+  --hotkey         Install session-aware Pause/Break integration
+  --kde-shortcut   Install only the KDE global shortcut
   --no-check       Skip scripts/check-system at the end
 EOF
 }
@@ -93,7 +93,7 @@ if [[ "$HOTKEY" == "1" && "$KDE_SHORTCUT" == "1" ]]; then
 fi
 
 if [[ "$HOTKEY" == "1" ]]; then
-  scripts/install-pause-daemon
+  scripts/install-desktop-integration
 elif [[ "$KDE_SHORTCUT" == "1" ]]; then
   scripts/install-kde-shortcut
 fi
