@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -u
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+CONFIG="$PROJECT_DIR/config/screenshot-tts.env"
+
+ok=0
+warn=0
+
+check_cmd() {
+  local name="$1"
+  local path
+  path="$(command -v "$name" || true)"
+  if [[ -n "$path" ]]; then
+    printf 'OK   %-18s %s\n' "$name" "$path"
+  else
+    printf 'MISS %-18s not found\n' "$name"
+    ok=1
+  fi
+}
+
+check_cmd spectacle
+check_cmd tesseract
+check_cmd pw-play
+check_cmd pw-record
+check_cmd ffmpeg
+check_cmd uv
+check_cmd kbuildsycoca6
+check_cmd gdbus
+check_cmd kwriteconfig6
+
+printf '\nVersions:\n'
+QT_QPA_PLATFORM=offscreen spectacle --version 2>/dev/null || true
+if command -v tesseract >/dev/null 2>&1; then
+  tesseract --version | sed -n '1p'
+  printf 'Tesseract languages: '
+  tesseract --list-langs 2>/dev/null | tail -n +2 | tr '\n' ' '
+  printf '\n'
+fi
+
+printf '\nOmniVoice environment:\n'
+PYTHON="$PROJECT_DIR/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  PYTHON="$(command -v python3 || true)"
+fi
+
+if [[ -z "$PYTHON" ]]; then
+  printf 'MISS python             not found\n'
+  ok=1
+else
+  printf 'OK   python             %s\n' "$PYTHON"
+"$PYTHON" - <<'PY'
+import importlib.util
+mods = ["torch", "soundfile", "omnivoice"]
+missing = False
+for name in mods:
+    found = importlib.util.find_spec(name) is not None
+    missing = missing or not found
+    print(("OK   " if found else "MISS ") + f"python:{name}")
+try:
+    import torch
+    print(f"INFO torch.cuda.is_available={torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"INFO torch.cuda.device_count={torch.cuda.device_count()}")
+        print(f"INFO torch.cuda.device_name={torch.cuda.get_device_name(0)}")
+except Exception as exc:
+    print(f"WARN torch probe failed: {exc}")
+raise SystemExit(1 if missing else 0)
+PY
+  if [[ $? -ne 0 ]]; then
+    warn=1
+  fi
+fi
+
+printf '\nConfig:\n'
+if [[ -r "$CONFIG" ]]; then
+  printf 'OK   config             %s\n' "$CONFIG"
+  # shellcheck disable=SC1090
+  source "$CONFIG"
+else
+  printf 'MISS config             copy config/example.env to config/screenshot-tts.env\n'
+  warn=1
+fi
+
+if [[ -n "${STTS_REF_AUDIO:-}" ]]; then
+  if [[ -r "$STTS_REF_AUDIO" ]]; then
+    printf 'OK   reference audio    %s\n' "$STTS_REF_AUDIO"
+  else
+    printf 'MISS reference audio    %s\n' "$STTS_REF_AUDIO"
+    warn=1
+  fi
+elif [[ -n "${STTS_OMNIVOICE_INSTRUCT:-}" ]]; then
+  printf 'OK   voice design       %s\n' "$STTS_OMNIVOICE_INSTRUCT"
+else
+  printf 'OK   voice mode         OmniVoice auto voice\n'
+fi
+
+if [[ $ok -ne 0 ]]; then
+  printf '\nSystem check failed: install missing required commands.\n'
+  exit 1
+fi
+if [[ $warn -ne 0 ]]; then
+  printf '\nSystem check completed with setup warnings.\n'
+  exit 2
+fi
+printf '\nSystem check passed.\n'

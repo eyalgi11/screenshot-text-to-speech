@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+DESKTOP_ID="io.github.eyal.screenshot-text-to-speech.desktop"
+APP_NAME="Read Selected Screen Text"
+APP_LABEL="Read selected screen text"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+APPLICATIONS_DIR="$DATA_HOME/applications"
+DESKTOP_FILE="$APPLICATIONS_DIR/$DESKTOP_ID"
+SHORTCUT_NAME="${STTS_KDE_SHORTCUT:-Pause}"
+QT_KEY_CODE="${STTS_KDE_SHORTCUT_QT_KEY:-16777224}"
+
+mkdir -p "$APPLICATIONS_DIR"
+
+cat > "$DESKTOP_FILE" <<EOF
+[Desktop Entry]
+Name=$APP_NAME
+GenericName=Screenshot OCR Text To Speech
+Comment=Select screen text and read it aloud
+Exec=$PROJECT_DIR/bin/screenshot-read
+Icon=preferences-desktop-accessibility
+Type=Application
+Terminal=false
+Categories=Utility;Accessibility;
+StartupNotify=false
+X-KDE-Shortcuts=$SHORTCUT_NAME
+EOF
+
+chmod 0644 "$DESKTOP_FILE"
+
+if command -v kbuildsycoca6 >/dev/null 2>&1; then
+  kbuildsycoca6 >/dev/null 2>&1 || true
+fi
+
+if command -v kwriteconfig6 >/dev/null 2>&1; then
+  if [[ -f "$CONFIG_HOME/kglobalshortcutsrc" && ! -f "$CONFIG_HOME/kglobalshortcutsrc.before-screenshot-text-to-speech" ]]; then
+    cp "$CONFIG_HOME/kglobalshortcutsrc" "$CONFIG_HOME/kglobalshortcutsrc.before-screenshot-text-to-speech"
+  fi
+  kwriteconfig6 --file kglobalshortcutsrc --group "$DESKTOP_ID" --key "_k_friendly_name" "$APP_NAME"
+  kwriteconfig6 --file kglobalshortcutsrc --group "$DESKTOP_ID" --key "_launch" "$SHORTCUT_NAME,none,$APP_LABEL"
+fi
+
+if command -v gdbus >/dev/null 2>&1; then
+  gdbus call --session --dest org.kde.kglobalaccel --object-path /kglobalaccel \
+    --method org.kde.KGlobalAccel.doRegister \
+    "['$DESKTOP_ID', '_launch', '$APP_NAME', '$APP_LABEL']" >/dev/null 2>&1 || true
+
+  if gdbus call --session --dest org.kde.kglobalaccel --object-path /kglobalaccel \
+    --method org.kde.KGlobalAccel.setShortcutKeys \
+    "['$DESKTOP_ID', '_launch', '$APP_NAME', '$APP_LABEL']" \
+    "[([$QT_KEY_CODE, 0, 0, 0],)]" 4 >/dev/null; then
+    echo "Installed $APP_NAME and assigned $SHORTCUT_NAME."
+  else
+    echo "Installed $APP_NAME, but KDE did not accept the live shortcut assignment." >&2
+    echo "Open System Settings -> Keyboard -> Shortcuts and assign $SHORTCUT_NAME manually." >&2
+    exit 2
+  fi
+else
+  echo "Installed $APP_NAME, but gdbus is missing." >&2
+  echo "Open System Settings -> Keyboard -> Shortcuts and assign $SHORTCUT_NAME manually." >&2
+  exit 2
+fi

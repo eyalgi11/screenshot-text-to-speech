@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd "$PROJECT_DIR"
+
+shell_files=(
+  bin/screenshot-read
+  scripts/check-portable
+  scripts/check-system
+  scripts/install
+  scripts/install-kde-shortcut
+  scripts/install-pause-daemon
+  scripts/install-system-deps
+  scripts/record-reference-voice
+  scripts/setup-omnivoice
+  scripts/uninstall
+)
+
+for file in "${shell_files[@]}"; do
+  bash -n "$file"
+done
+
+python3 -m py_compile bin/omnivoice-say bin/pause-hotkey-daemon
+
+forbidden_homes=("${STTS_PORTABLE_FORBIDDEN_HOME:-/home/${STTS_PORTABLE_FORBIDDEN_USER:-eyal}}")
+if [[ -n "${HOME:-}" && "$HOME" != "${forbidden_homes[0]}" ]]; then
+  forbidden_homes+=("$HOME")
+fi
+
+for home_path in "${forbidden_homes[@]}"; do
+  if command -v rg >/dev/null 2>&1; then
+    hardcoded_home="$(rg -n -F "$home_path" . \
+      --glob '!config/screenshot-tts.env' \
+      --glob '!voices/**' \
+      --glob '!.venv/**' \
+      --glob '!.git/**' \
+      --glob '!.agents/**' \
+      --glob '!.codex/**' || true)"
+  else
+    hardcoded_home="$(grep -RInF --exclude-dir=.venv --exclude-dir=.git --exclude-dir=.agents --exclude-dir=.codex --exclude-dir=voices --exclude=screenshot-tts.env "$home_path" . || true)"
+  fi
+
+  if [[ -n "$hardcoded_home" ]]; then
+    printf 'Found hardcoded local home paths outside ignored local files:\n%s\n' "$hardcoded_home" >&2
+    exit 1
+  fi
+done
+
+echo "Portable checks passed."

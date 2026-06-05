@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+SERVICE_NAME="screenshot-text-to-speech-pause.service"
+USER_SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+SERVICE_FILE="$USER_SYSTEMD_DIR/$SERVICE_NAME"
+PYTHON="$PROJECT_DIR/.venv/bin/python"
+DESKTOP_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/applications/io.github.eyal.screenshot-text-to-speech.desktop"
+
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Missing project venv Python. Run scripts/setup-omnivoice first." >&2
+  exit 1
+fi
+
+"$PYTHON" -c "import Xlib" >/dev/null 2>&1 || {
+  echo "Missing python-xlib in .venv. Run: uv pip install --python .venv/bin/python python-xlib" >&2
+  exit 1
+}
+
+mkdir -p "$USER_SYSTEMD_DIR"
+
+if [[ -f "$DESKTOP_FILE" ]]; then
+  sed -i '/^X-KDE-Shortcuts=/d' "$DESKTOP_FILE"
+  if command -v kbuildsycoca6 >/dev/null 2>&1; then
+    kbuildsycoca6 >/dev/null 2>&1 || true
+  fi
+fi
+
+if command -v qdbus6 >/dev/null 2>&1; then
+  qdbus6 org.kde.kglobalaccel /kglobalaccel org.kde.KGlobalAccel.unregister \
+    io.github.eyal.screenshot-text-to-speech.desktop _launch >/dev/null 2>&1 || true
+fi
+
+cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Screenshot Text To Speech Pause/Break hotkey
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=$PROJECT_DIR
+ExecStart=$PYTHON $PROJECT_DIR/bin/pause-hotkey-daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user import-environment DISPLAY XAUTHORITY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP || true
+systemctl --user daemon-reload
+systemctl --user enable --now "$SERVICE_NAME"
+systemctl --user --no-pager --full status "$SERVICE_NAME"

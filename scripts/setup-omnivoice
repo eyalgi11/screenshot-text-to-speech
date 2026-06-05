@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+VENV="$PROJECT_DIR/.venv"
+PYTHON_SPEC="${STTS_PYTHON:-python3}"
+TORCH_MODE="${STTS_TORCH_MODE:-auto}"
+
+cd "$PROJECT_DIR"
+
+if [[ "$TORCH_MODE" == "auto" ]]; then
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    TORCH_MODE="cuda128"
+  else
+    TORCH_MODE="cpu"
+  fi
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  echo "Creating virtualenv at $VENV using uv and $PYTHON_SPEC"
+  uv venv --python "$PYTHON_SPEC" "$VENV"
+  PY="$VENV/bin/python"
+  install_pkg=(uv pip install --python "$PY")
+else
+  echo "Creating virtualenv at $VENV using python venv"
+  command -v "$PYTHON_SPEC" >/dev/null 2>&1 || {
+    echo "Missing $PYTHON_SPEC. Install Python 3 first." >&2
+    exit 1
+  }
+  "$PYTHON_SPEC" -m venv "$VENV"
+  PY="$VENV/bin/python"
+  "$PY" -m pip install --upgrade pip wheel
+  install_pkg=("$PY" -m pip install)
+fi
+
+case "$TORCH_MODE" in
+  cuda128)
+    echo "Installing PyTorch 2.8.0 CUDA 12.8 wheels"
+    "${install_pkg[@]}" --index-url https://download.pytorch.org/whl/cu128 \
+      "torch==2.8.0+cu128" "torchaudio==2.8.0+cu128"
+    ;;
+  cpu)
+    echo "Installing CPU PyTorch wheels"
+    "${install_pkg[@]}" "torch==2.8.0" "torchaudio==2.8.0"
+    ;;
+  skip)
+    echo "Skipping PyTorch install"
+    ;;
+  *)
+    echo "Unknown STTS_TORCH_MODE=$TORCH_MODE. Use auto, cuda128, cpu, or skip." >&2
+    exit 2
+    ;;
+esac
+
+echo "Installing OmniVoice from upstream GitHub"
+"${install_pkg[@]}" "git+https://github.com/k2-fsa/OmniVoice.git" python-xlib
+
+echo "Done. Run scripts/check-system next."

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+WITH_SYSTEM_DEPS=0
+WITH_HEBREW=0
+HOTKEY=0
+KDE_SHORTCUT=0
+RUN_CHECK=1
+TORCH_MODE=""
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/install [options]
+
+Create the Python environment, install OmniVoice, create local config, and
+optionally install the Pause/Break hotkey integration.
+
+Options:
+  --system-deps    Install native distro packages first
+  --hebrew         Include Hebrew OCR packages when installing system deps
+  --cpu            Install CPU PyTorch wheels
+  --cuda128        Install CUDA 12.8 PyTorch wheels
+  --skip-torch     Do not install PyTorch
+  --hotkey         Install the X11 Pause/Break systemd user daemon
+  --kde-shortcut   Install the KDE launcher shortcut instead of the X11 daemon
+  --no-check       Skip scripts/check-system at the end
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --system-deps)
+      WITH_SYSTEM_DEPS=1
+      ;;
+    --hebrew)
+      WITH_HEBREW=1
+      ;;
+    --cpu)
+      TORCH_MODE="cpu"
+      ;;
+    --cuda128)
+      TORCH_MODE="cuda128"
+      ;;
+    --skip-torch)
+      TORCH_MODE="skip"
+      ;;
+    --hotkey)
+      HOTKEY=1
+      ;;
+    --kde-shortcut)
+      KDE_SHORTCUT=1
+      ;;
+    --no-check)
+      RUN_CHECK=0
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+cd "$PROJECT_DIR"
+
+if [[ "$WITH_SYSTEM_DEPS" == "1" ]]; then
+  deps_args=(--install)
+  [[ "$WITH_HEBREW" == "1" ]] && deps_args+=(--hebrew)
+  scripts/install-system-deps "${deps_args[@]}"
+fi
+
+if [[ -n "$TORCH_MODE" ]]; then
+  export STTS_TORCH_MODE="$TORCH_MODE"
+fi
+scripts/setup-omnivoice
+
+if [[ ! -f config/screenshot-tts.env ]]; then
+  cp config/example.env config/screenshot-tts.env
+  echo "Created config/screenshot-tts.env"
+else
+  echo "Keeping existing config/screenshot-tts.env"
+fi
+
+if [[ "$HOTKEY" == "1" && "$KDE_SHORTCUT" == "1" ]]; then
+  echo "Choose either --hotkey or --kde-shortcut, not both." >&2
+  exit 2
+fi
+
+if [[ "$HOTKEY" == "1" ]]; then
+  scripts/install-pause-daemon
+elif [[ "$KDE_SHORTCUT" == "1" ]]; then
+  scripts/install-kde-shortcut
+fi
+
+if [[ "$RUN_CHECK" == "1" ]]; then
+  if ! scripts/check-system; then
+    cat <<'EOF'
+
+Install completed, but the system check found missing native tools or setup
+warnings. Install the missing packages, edit config/screenshot-tts.env, then run:
+  scripts/check-system
+EOF
+  fi
+fi
+
+cat <<'EOF'
+
+Next:
+  1. Edit config/screenshot-tts.env if you want a reference voice or GPU override.
+  2. Run bin/screenshot-read for a manual test.
+  3. Press Pause/Break again while reading to cancel.
+EOF

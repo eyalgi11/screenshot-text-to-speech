@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+OUT="${1:-$PROJECT_DIR/voices/reference.wav}"
+DURATION="${2:-8}"
+PROMPT="${STTS_REFERENCE_PROMPT:-This is the voice I want for reading screen text clearly and calmly. It should sound natural, steady, and easy to listen to.}"
+
+command -v pw-record >/dev/null 2>&1 || {
+  echo "Missing pw-record." >&2
+  exit 1
+}
+command -v ffmpeg >/dev/null 2>&1 || {
+  echo "Missing ffmpeg." >&2
+  exit 1
+}
+command -v timeout >/dev/null 2>&1 || {
+  echo "Missing timeout." >&2
+  exit 1
+}
+
+mkdir -p "$(dirname -- "$OUT")"
+RUN_DIR="${XDG_RUNTIME_DIR:-/tmp}/screenshot-text-to-speech"
+mkdir -p "$RUN_DIR"
+RAW="$RUN_DIR/reference-raw-$(date '+%Y%m%d-%H%M%S').wav"
+
+cat <<EOF
+Recording $DURATION seconds from the default microphone.
+
+Read this after recording starts:
+
+$PROMPT
+
+Starting in 3 seconds...
+EOF
+sleep 3
+
+set +e
+timeout --signal=INT "${DURATION}s" pw-record --rate 48000 --channels 1 --format s16 "$RAW"
+status=$?
+set -e
+if [[ $status -ne 0 && $status -ne 124 ]]; then
+  echo "Recording failed with status $status" >&2
+  exit "$status"
+fi
+
+ffmpeg -y -hide_banner -loglevel error -i "$RAW" \
+  -ac 1 -ar 24000 -af "highpass=f=70,lowpass=f=9000,loudnorm=I=-18:TP=-2:LRA=11" \
+  "$OUT"
+
+printf '%s\n' "$PROMPT" > "${OUT%.*}.txt"
+rm -f -- "$RAW"
+
+cat <<EOF
+Saved:
+  $OUT
+  ${OUT%.*}.txt
+
+Use these in config/screenshot-tts.env:
+  STTS_REF_AUDIO=$OUT
+  STTS_REF_TEXT_FILE=${OUT%.*}.txt
+EOF

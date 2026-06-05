@@ -1,0 +1,14 @@
+.agents/
+.codex/
+.venv/
+.mypy_cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Local machine/user configuration.
+config/screenshot-tts.env
+
+# Reference voices are personal and should not be published.
+voices/*
+!voices/.gitkeep

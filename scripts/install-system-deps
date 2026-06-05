@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+INSTALL=0
+WITH_HEBREW=0
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/install-system-deps [--install] [--hebrew]
+
+Print, or with --install run, the distro package command for native tools:
+Spectacle, Tesseract OCR, PipeWire playback, ffmpeg, git, Python, and notify-send.
+
+Options:
+  --install  Run the package command through sudo when not root
+  --hebrew   Add Hebrew Tesseract traineddata where the distro packages it
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --install)
+      INSTALL=1
+      ;;
+    --hebrew)
+      WITH_HEBREW=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+run_as_root() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    "$@"
+  else
+    command -v sudo >/dev/null 2>&1 || {
+      echo "sudo is required for --install when not running as root." >&2
+      exit 1
+    }
+    sudo "$@"
+  fi
+}
+
+print_command() {
+  printf 'Detected package manager: %s\n' "$1"
+  shift
+  printf 'Run:\n  '
+  printf '%q ' "$@"
+  printf '\n'
+}
+
+manager=""
+cmd=()
+
+if command -v zypper >/dev/null 2>&1; then
+  manager="zypper"
+  packages=(spectacle tesseract-ocr tesseract-ocr-traineddata-eng pipewire-tools ffmpeg git python3 python3-pip python3-virtualenv libnotify-tools)
+  [[ "$WITH_HEBREW" == "1" ]] && packages+=(tesseract-ocr-traineddata-heb)
+  cmd=(zypper install "${packages[@]}")
+elif command -v apt-get >/dev/null 2>&1; then
+  manager="apt"
+  packages=(spectacle tesseract-ocr tesseract-ocr-eng pipewire-bin ffmpeg git python3 python3-venv python3-pip libnotify-bin)
+  [[ "$WITH_HEBREW" == "1" ]] && packages+=(tesseract-ocr-heb)
+  cmd=(apt-get install "${packages[@]}")
+elif command -v dnf >/dev/null 2>&1; then
+  manager="dnf"
+  packages=(spectacle tesseract tesseract-langpack-eng pipewire-utils ffmpeg git python3 python3-pip libnotify)
+  [[ "$WITH_HEBREW" == "1" ]] && packages+=(tesseract-langpack-heb)
+  cmd=(dnf install "${packages[@]}")
+elif command -v pacman >/dev/null 2>&1; then
+  manager="pacman"
+  packages=(spectacle tesseract tesseract-data-eng pipewire ffmpeg git python python-pip python-virtualenv libnotify)
+  [[ "$WITH_HEBREW" == "1" ]] && packages+=(tesseract-data-heb)
+  cmd=(pacman -S "${packages[@]}")
+else
+  cat >&2 <<'EOF'
+Could not detect zypper, apt-get, dnf, or pacman.
+
+Install these native tools with your distro package manager:
+  spectacle tesseract English-traineddata pw-play/pw-record ffmpeg git python3 python3-venv notify-send
+EOF
+  exit 1
+fi
+
+if [[ "$INSTALL" == "1" ]]; then
+  case "$manager" in
+    zypper) run_as_root "${cmd[@]}" ;;
+    apt) run_as_root apt-get update; run_as_root "${cmd[@]}" ;;
+    dnf) run_as_root "${cmd[@]}" ;;
+    pacman) run_as_root "${cmd[@]}" ;;
+  esac
+else
+  print_command "$manager" "${cmd[@]}"
+fi
