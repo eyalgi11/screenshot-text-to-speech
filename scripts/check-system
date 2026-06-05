@@ -99,8 +99,10 @@ printf '\nHebrew TTS routing:\n'
 printf 'OK   hebrew engine      %s\n' "${STTS_HEBREW_TTS_ENGINE:-auto}"
 printf 'OK   hebrew threshold   %s\n' "${STTS_HEBREW_ROUTE_THRESHOLD:-0.35}"
 printf 'OK   hebrew min chars   %s\n' "${STTS_HEBREW_ROUTE_MIN_CHARS:-3}"
-printf 'OK   Blue speed         %s\n' "${STTS_BLUE_SPEED:-1.05}"
+printf 'OK   Blue speed         %s\n' "${STTS_BLUE_SPEED:-0.5}"
 printf 'OK   Blue total step    %s\n' "${STTS_BLUE_TOTAL_STEP:-16}"
+printf 'OK   Blue chunk chars   %s\n' "${STTS_BLUE_MAX_CHUNK_CHARS:-80}"
+printf 'OK   Blue chunk gap ms  %s\n' "${STTS_BLUE_CHUNK_GAP_MS:-180}"
 printf 'OK   hebrew detector    '
 if printf 'שלום עולם' | "$PYTHON" "$PROJECT_DIR/bin/detect-text-language" | grep -F 'route=hebrew' >/dev/null; then
   printf 'routes Hebrew text to Hebrew TTS\n'

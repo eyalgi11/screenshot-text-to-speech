@@ -161,8 +161,10 @@ BLUE_STYLE_JSON="${STTS_BLUE_STYLE_JSON:-$PROJECT_DIR/models/blue-voices/female1
 BLUE_RENIKUD_MODEL="${STTS_BLUE_RENIKUD_MODEL:-$PROJECT_DIR/models/renikud/model.onnx}"
 BLUE_LANGUAGE="${STTS_BLUE_LANGUAGE:-he}"
 BLUE_PYTHON="${STTS_BLUE_PYTHON:-$PROJECT_DIR/.venv-blue/bin/python}"
-BLUE_SPEED="${STTS_BLUE_SPEED:-1.05}"
+BLUE_SPEED="${STTS_BLUE_SPEED:-0.5}"
 BLUE_TOTAL_STEP="${STTS_BLUE_TOTAL_STEP:-16}"
+BLUE_MAX_CHUNK_CHARS="${STTS_BLUE_MAX_CHUNK_CHARS:-80}"
+BLUE_CHUNK_GAP_MS="${STTS_BLUE_CHUNK_GAP_MS:-180}"
 
 need "$SPECTACLE"
 need "$TESSERACT"
@@ -299,6 +301,8 @@ if [[ "$tts_engine" == "blue" ]]; then
     --language "$BLUE_LANGUAGE"
     --speed "$BLUE_SPEED"
     --total-step "$BLUE_TOTAL_STEP"
+    --max-chunk-chars "$BLUE_MAX_CHUNK_CHARS"
+    --chunk-gap-ms "$BLUE_CHUNK_GAP_MS"
   )
 else
   tts_python="$PYTHON"

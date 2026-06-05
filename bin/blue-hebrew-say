@@ -15,8 +15,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--style-json", required=True, help="Blue voice style JSON")
     p.add_argument("--renikud-path", required=True, help="renikud Hebrew G2P model.onnx")
     p.add_argument("--language", default="he", help="BlueTTS language code")
-    p.add_argument("--speed", type=float, default=1.05)
+    p.add_argument("--speed", type=float, default=0.5)
     p.add_argument("--total-step", type=int, default=16)
+    p.add_argument("--max-chunk-chars", type=int, default=80)
+    p.add_argument("--chunk-gap-ms", type=int, default=180)
     return p
 
 
@@ -39,7 +41,8 @@ def main() -> int:
 
     try:
         import soundfile as sf
-        from blue_onnx import load_text_to_speech, load_voice_style
+        import numpy as np
+        from blue_onnx import chunk_text, load_text_to_speech, load_voice_style
     except Exception as exc:  # pragma: no cover - depends on local ML env
         print(f"Unable to import BlueTTS dependencies: {exc}", file=sys.stderr)
         return 3
@@ -54,16 +57,28 @@ def main() -> int:
     tts = load_text_to_speech(str(onnx_dir))
     style = load_voice_style([str(style_json)])
 
-    print(f"Generating BlueTTS speech in {args.language}...", file=sys.stderr)
-    samples, _durations = tts.batch(
-        [text],
-        [args.language],
-        style,
-        total_step=args.total_step,
-        speed=args.speed,
+    chunks = chunk_text(text, max_len=args.max_chunk_chars) or [text]
+    print(
+        f"Generating BlueTTS speech in {args.language} with {len(chunks)} chunk(s)...",
+        file=sys.stderr,
     )
-    if getattr(samples, "ndim", 1) > 1:
-        samples = samples[0]
+    pieces = []
+    gap = np.zeros(int(tts.sample_rate * max(args.chunk_gap_ms, 0) / 1000), dtype=np.float32)
+    for index, chunk in enumerate(chunks):
+        samples, _durations = tts.batch(
+            [chunk],
+            [args.language],
+            style,
+            total_step=args.total_step,
+            speed=args.speed,
+        )
+        if getattr(samples, "ndim", 1) > 1:
+            samples = samples[0]
+        pieces.append(samples)
+        if gap.size and index < len(chunks) - 1:
+            pieces.append(gap)
+
+    samples = np.concatenate(pieces) if pieces else np.array([], dtype=np.float32)
     sf.write(str(output), samples, tts.sample_rate)
     print(f"Saved {output}", file=sys.stderr)
     return 0
