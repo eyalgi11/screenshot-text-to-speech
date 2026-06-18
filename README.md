@@ -202,6 +202,11 @@ Edit `config/screenshot-tts.env`.
 Important options:
 
 - `STTS_OCR_LANG=eng` or `eng+heb`.
+- `STTS_OCR_PREPROCESS=auto`, `off`, or `always`. `auto` keeps raw OCR when
+  Tesseract confidence is healthy and retries a contrast-enhanced, sharpened
+  image when OCR confidence is weak.
+- `STTS_OCR_PREPROCESS_MIN_CONFIDENCE=50` and
+  `STTS_OCR_PREPROCESS_MIN_WORDS=3` tune the automatic fallback.
 - `STTS_REF_AUDIO` and `STTS_REF_TEXT_FILE` for a local reference voice.
 - `STTS_OMNIVOICE_INSTRUCT` for voice design without cloning a real person.
 - `STTS_OMNIVOICE_DEVICE=cuda:0` to force a GPU, or leave empty for auto.
@@ -225,6 +230,16 @@ Local machine readiness:
 ```sh
 scripts/check-system
 ```
+
+OCR stress test with generated hard text images:
+
+```sh
+scripts/stress-ocr
+```
+
+The stress test writes images, OCR text, route decisions, and a Markdown report
+under `tmp/ocr-stress/latest`. Use `scripts/stress-ocr --mode all` to compare
+raw OCR, always-preprocessed OCR, and the app's automatic fallback.
 
 The checker does not download OmniVoice model weights. The first real OmniVoice
 generation may download the model from Hugging Face into the normal cache.

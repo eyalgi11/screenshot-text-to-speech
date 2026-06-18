@@ -1,0 +1,503 @@
+#!/usr/bin/env python3
+"""Generate difficult text images and score the OCR/TTS routing path."""
+
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import os
+import re
+import shutil
+import shlex
+import subprocess
+import sys
+import time
+import unicodedata
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_OUT_DIR = PROJECT_DIR / "tmp" / "ocr-stress" / "latest"
+BIDI_MARKS = {
+    "\u200e",
+    "\u200f",
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
+    "\u2066",
+    "\u2067",
+    "\u2068",
+    "\u2069",
+}
+
+
+@dataclass(frozen=True)
+class Case:
+    id: str
+    text: str
+    expected_route: str
+    max_cer: float
+    font_size: int = 30
+    width: int = 1180
+    fill: str = "#111111"
+    background: str = "#ffffff"
+    effects: tuple[str, ...] = ()
+    notes: str = ""
+
+
+CASES: tuple[Case, ...] = (
+    Case(
+        id="english_clean_paragraph",
+        text=(
+            "The quick brown fox jumps over lazy OCR engines.\n"
+            "Invoice total: $1,248.90 due on 2026-06-18.\n"
+            "Mixed punctuation: quotes, commas, hyphens, and 3.14159."
+        ),
+        expected_route="default",
+        max_cer=0.03,
+        notes="Clean English paragraph with numbers and punctuation.",
+    ),
+    Case(
+        id="english_small_ui",
+        text=(
+            "Settings > Accessibility > Read selected screen text\n"
+            "Press Pause/Break to capture a region, press again to cancel."
+        ),
+        expected_route="default",
+        max_cer=0.08,
+        font_size=17,
+        width=920,
+        effects=("resize_75",),
+        notes="Small UI text, downscaled before OCR.",
+    ),
+    Case(
+        id="english_low_contrast_blur",
+        text=(
+            "Low contrast status messages are a common screenshot failure mode.\n"
+            "The OCR should still preserve enough text for speech."
+        ),
+        expected_route="default",
+        max_cer=0.18,
+        font_size=24,
+        fill="#777777",
+        background="#eeeeee",
+        effects=("blur", "noise"),
+        notes="Low contrast, blur, and mild noise.",
+    ),
+    Case(
+        id="code_symbols",
+        text=(
+            "export STTS_OCR_LANG=eng+heb\n"
+            "if [[ \"$tts_engine\" == \"blue\" ]]; then echo route=hebrew; fi\n"
+            "JSON: {\"speed\": 1.05, \"chunk\": 80, \"ok\": true}"
+        ),
+        expected_route="default",
+        max_cer=0.14,
+        font_size=22,
+        width=1320,
+        notes="Code-like text and symbols; useful to reveal punctuation loss.",
+    ),
+    Case(
+        id="hebrew_clean_paragraph",
+        text=(
+            "כן. אושילנד כפר סבא פתוחה בשבת.\n"
+            "לפי האתר הרשמי של אושילנד, שעות פעילות המתחם הן 10:00-21:00.\n"
+            "שים לב: לא כל החנויות פתוחות באותן שעות."
+        ),
+        expected_route="hebrew",
+        max_cer=0.08,
+        font_size=28,
+        width=1180,
+        notes="Clean Hebrew paragraph similar to the user-selected text.",
+    ),
+    Case(
+        id="hebrew_small_low_contrast",
+        text=(
+            "טקסט קטן בעברית יכול להיות קשה לזיהוי.\n"
+            "בדיקה זו בודקת אם המערכת עדיין מעבירה את הטקסט למסלול העברי."
+        ),
+        expected_route="hebrew",
+        max_cer=0.20,
+        font_size=20,
+        width=1000,
+        fill="#666666",
+        background="#f2f2f2",
+        effects=("resize_80", "blur"),
+        notes="Small low-contrast Hebrew text.",
+    ),
+    Case(
+        id="mixed_hebrew_ui",
+        text=(
+            "Status: open\n"
+            "אישור ההזמנה התקבל בשעה 14:35 ונשלח לכתובת example@example.com.\n"
+            "Order ID: ABC-12345"
+        ),
+        expected_route="hebrew",
+        max_cer=0.14,
+        font_size=25,
+        width=1120,
+        notes="Mixed English/Hebrew text should still route to Hebrew.",
+    ),
+    Case(
+        id="skewed_receipt",
+        text=(
+            "Receipt #2048\n"
+            "Coffee beans      38.00\n"
+            "Milk alternative   7.50\n"
+            "TOTAL             45.50"
+        ),
+        expected_route="default",
+        max_cer=0.12,
+        font_size=24,
+        width=820,
+        effects=("rotate_1",),
+        notes="Slightly skewed receipt-style text with columns.",
+    ),
+)
+
+
+def parse_env_file(path: Path) -> dict[str, str]:
+    config: dict[str, str] = {}
+    if not path.exists():
+        return config
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        try:
+            config[key.strip()] = shlex.split(value, posix=True)[0] if value.strip() else ""
+        except ValueError:
+            config[key.strip()] = value.strip().strip('"').strip("'")
+    return config
+
+
+def available_langs() -> set[str]:
+    proc = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True, check=False)
+    return {line.strip() for line in proc.stdout.splitlines()[1:] if line.strip()}
+
+
+def default_ocr_lang(config: dict[str, str]) -> str:
+    if config.get("STTS_OCR_LANG"):
+        return config["STTS_OCR_LANG"]
+    langs = available_langs()
+    return "eng+heb" if {"eng", "heb"}.issubset(langs) else "eng"
+
+
+def normalize(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(ch for ch in text if ch not in BIDI_MARKS)
+    text = text.replace("־", "-")
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\n\s+", "\n", text)
+    text = re.sub(r"\s+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip().lower()
+
+
+def levenshtein(a: list[str] | str, b: list[str] | str) -> int:
+    if len(a) < len(b):
+        a, b = b, a
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            insert = current[j - 1] + 1
+            delete = previous[j] + 1
+            replace = previous[j - 1] + (ca != cb)
+            current.append(min(insert, delete, replace))
+        previous = current
+    return previous[-1]
+
+
+def error_rates(expected: str, actual: str) -> tuple[float, float]:
+    expected_norm = normalize(expected)
+    actual_norm = normalize(actual)
+    char_den = max(len(expected_norm), 1)
+    cer = levenshtein(expected_norm, actual_norm) / char_den
+    expected_words = expected_norm.split()
+    actual_words = actual_norm.split()
+    wer = levenshtein(expected_words, actual_words) / max(len(expected_words), 1)
+    return cer, wer
+
+
+def pango_markup(case: Case) -> str:
+    escaped = html.escape(case.text)
+    return f'<span font_desc="DejaVu Sans {case.font_size}">{escaped}</span>'
+
+
+def run(cmd: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        input=input_text,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def generate_image(case: Case, path: Path) -> None:
+    base = [
+        "magick",
+        "-seed",
+        str(sum(ord(ch) for ch in case.id)),
+        "-background",
+        case.background,
+        "-fill",
+        case.fill,
+        "-size",
+        f"{case.width}x",
+        f"pango:{pango_markup(case)}",
+        "-bordercolor",
+        case.background,
+        "-border",
+        "28",
+    ]
+    effects: list[str] = []
+    for effect in case.effects:
+        if effect == "blur":
+            effects.extend(["-blur", "0x0.7"])
+        elif effect == "noise":
+            effects.extend(["+noise", "Gaussian"])
+        elif effect == "resize_75":
+            effects.extend(["-resize", "75%"])
+        elif effect == "resize_80":
+            effects.extend(["-resize", "80%"])
+        elif effect == "rotate_1":
+            effects.extend(["-background", case.background, "-rotate", "1"])
+        else:
+            raise ValueError(f"Unknown effect: {effect}")
+
+    proc = run([*base, *effects, str(path)])
+    if proc.returncode != 0:
+        raise RuntimeError(f"Image generation failed for {case.id}:\n{proc.stderr}")
+
+
+def preprocess_image(input_path: Path, output_path: Path) -> None:
+    proc = run(
+        [
+            "magick",
+            str(input_path),
+            "-colorspace",
+            "Gray",
+            "-resize",
+            "200%",
+            "-sigmoidal-contrast",
+            "8x50%",
+            "-sharpen",
+            "0x1",
+            str(output_path),
+        ]
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Preprocess failed for {input_path}:\n{proc.stderr}")
+
+
+def ocr_image(path: Path, lang: str, psm: str) -> tuple[str, str]:
+    proc = run(["tesseract", str(path), "stdout", "-l", lang, "--psm", psm])
+    return proc.stdout, proc.stderr
+
+
+def ocr_image_auto(path: Path, output_path: Path, preprocessed_path: Path, lang: str, psm: str) -> tuple[str, str]:
+    proc = run(
+        [
+            sys.executable,
+            str(PROJECT_DIR / "bin" / "ocr-image"),
+            "--image",
+            str(path),
+            "--output",
+            str(output_path),
+            "--lang",
+            lang,
+            "--psm",
+            psm,
+            "--preprocess",
+            "auto",
+            "--preprocessed-image",
+            str(preprocessed_path),
+        ]
+    )
+    text = output_path.read_text(encoding="utf-8") if output_path.exists() else ""
+    return text, proc.stderr
+
+
+def detect_route(text: str, config: dict[str, str]) -> tuple[str, dict[str, str]]:
+    threshold = config.get("STTS_HEBREW_ROUTE_THRESHOLD", "0.35")
+    min_chars = config.get("STTS_HEBREW_ROUTE_MIN_CHARS", "3")
+    proc = run(
+        [
+            sys.executable,
+            str(PROJECT_DIR / "bin" / "detect-text-language"),
+            "--hebrew-threshold",
+            threshold,
+            "--hebrew-min-chars",
+            min_chars,
+        ],
+        input_text=text,
+    )
+    parsed: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            parsed[key] = value
+    return parsed.get("route", "unknown"), parsed
+
+
+def write_report(results: list[dict[str, object]], out_dir: Path, lang: str, psm: str, mode: str) -> None:
+    failures = [row for row in results if not row["passed"]]
+    lines = [
+        "# OCR Stress Report",
+        "",
+        f"- Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        f"- OCR language: `{lang}`",
+        f"- Tesseract PSM: `{psm}`",
+        f"- Mode: `{mode}`",
+        f"- Cases: {len(results)}",
+        f"- Failures: {len(failures)}",
+        "",
+        "| Case | Mode | CER | WER | Route | Expected Route | Pass | Notes |",
+        "| --- | --- | ---: | ---: | --- | --- | --- | --- |",
+    ]
+    for row in results:
+        lines.append(
+            "| {case} | {mode} | {cer:.3f} | {wer:.3f} | {route} | {expected_route} | {passed} | {notes} |".format(
+                case=row["case"],
+                mode=row["mode"],
+                cer=row["cer"],
+                wer=row["wer"],
+                route=row["route"],
+                expected_route=row["expected_route"],
+                passed="yes" if row["passed"] else "NO",
+                notes=str(row["notes"]).replace("|", "\\|"),
+            )
+        )
+    lines.append("")
+    lines.append("## OCR Text")
+    for row in results:
+        lines.extend(
+            [
+                "",
+                f"### {row['case']} ({row['mode']})",
+                "",
+                f"- Image: `{row['image']}`",
+                f"- Ground truth: `{row['truth_file']}`",
+                f"- OCR file: `{row['ocr_file']}`",
+                "",
+                "```text",
+                str(row["ocr_text"]).strip(),
+                "```",
+            ]
+        )
+    (out_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (out_dir / "results.json").write_text(json.dumps(results, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def case_subset(names: str | None) -> Iterable[Case]:
+    if not names:
+        return CASES
+    wanted = {name.strip() for name in names.split(",") if name.strip()}
+    selected = [case for case in CASES if case.id in wanted]
+    missing = wanted - {case.id for case in selected}
+    if missing:
+        raise SystemExit(f"Unknown case(s): {', '.join(sorted(missing))}")
+    return selected
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Generate difficult OCR images and score Tesseract/TTS routing")
+    p.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="Artifact directory")
+    p.add_argument("--lang", help="Tesseract language, default from config or eng+heb")
+    p.add_argument("--psm", help="Tesseract page segmentation mode, default from config or 6")
+    p.add_argument("--mode", choices=["auto", "raw", "preprocessed", "both", "all"], default="auto")
+    p.add_argument("--cases", help="Comma-separated case ids to run")
+    p.add_argument("--no-clean", action="store_true", help="Keep existing output directory contents")
+    args = p.parse_args()
+
+    for command in ("magick", "tesseract"):
+        if not shutil.which(command):
+            raise SystemExit(f"Missing command: {command}")
+
+    config = parse_env_file(PROJECT_DIR / "config" / "screenshot-tts.env")
+    lang = args.lang or default_ocr_lang(config)
+    psm = args.psm or config.get("STTS_OCR_PSM", "6")
+    out_dir = Path(args.out_dir).expanduser()
+    if out_dir.exists() and not args.no_clean:
+        shutil.rmtree(out_dir)
+    (out_dir / "images").mkdir(parents=True, exist_ok=True)
+    (out_dir / "truth").mkdir(parents=True, exist_ok=True)
+    (out_dir / "ocr").mkdir(parents=True, exist_ok=True)
+
+    modes = ["raw", "preprocessed"] if args.mode == "both" else ["raw", "preprocessed", "auto"] if args.mode == "all" else [args.mode]
+    results: list[dict[str, object]] = []
+
+    for case in case_subset(args.cases):
+        image = out_dir / "images" / f"{case.id}.png"
+        truth_file = out_dir / "truth" / f"{case.id}.txt"
+        generate_image(case, image)
+        truth_file.write_text(case.text + "\n", encoding="utf-8")
+
+        for mode in modes:
+            ocr_input = image
+            if mode == "preprocessed":
+                ocr_input = out_dir / "images" / f"{case.id}.preprocessed.png"
+                preprocess_image(image, ocr_input)
+
+            ocr_file = out_dir / "ocr" / f"{case.id}.{mode}.txt"
+            stderr_file = out_dir / "ocr" / f"{case.id}.{mode}.stderr.txt"
+            if mode == "auto":
+                ocr_text, stderr = ocr_image_auto(
+                    image,
+                    ocr_file,
+                    out_dir / "images" / f"{case.id}.auto-preprocessed.png",
+                    lang,
+                    psm,
+                )
+            else:
+                ocr_text, stderr = ocr_image(ocr_input, lang, psm)
+            ocr_file.write_text(ocr_text, encoding="utf-8")
+            stderr_file.write_text(stderr, encoding="utf-8")
+
+            cer, wer = error_rates(case.text, ocr_text)
+            route, route_info = detect_route(ocr_text, config)
+            passed = cer <= case.max_cer and route == case.expected_route
+            results.append(
+                {
+                    "case": case.id,
+                    "mode": mode,
+                    "image": str(ocr_input.relative_to(out_dir)),
+                    "truth_file": str(truth_file.relative_to(out_dir)),
+                    "ocr_file": str(ocr_file.relative_to(out_dir)),
+                    "cer": cer,
+                    "wer": wer,
+                    "max_cer": case.max_cer,
+                    "route": route,
+                    "expected_route": case.expected_route,
+                    "route_info": route_info,
+                    "passed": passed,
+                    "notes": case.notes,
+                    "ocr_text": ocr_text,
+                }
+            )
+
+    write_report(results, out_dir, lang, psm, args.mode)
+    failures = [row for row in results if not row["passed"]]
+    print(f"OCR stress artifacts: {out_dir}")
+    print(f"Report: {out_dir / 'report.md'}")
+    print(f"Cases: {len(results)}  Failures: {len(failures)}")
+    for row in results:
+        status = "PASS" if row["passed"] else "FAIL"
+        print(
+            f"{status} {row['case']}[{row['mode']}]: "
+            f"CER={row['cer']:.3f} WER={row['wer']:.3f} "
+            f"route={row['route']} expected={row['expected_route']}"
+        )
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

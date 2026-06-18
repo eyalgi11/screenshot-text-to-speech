@@ -9,7 +9,8 @@ usage() {
 Usage: scripts/install-system-deps [--install] [--hebrew]
 
 Print, or with --install run, the distro package command for native tools:
-Spectacle, Tesseract OCR, PipeWire playback, ffmpeg, git, Python, and notify-send.
+Spectacle, Tesseract OCR, PipeWire playback, ImageMagick, ffmpeg, git, Python,
+and notify-send.
 
 Options:
   --install  Run the package command through sudo when not root
@@ -63,22 +64,22 @@ cmd=()
 
 if command -v zypper >/dev/null 2>&1; then
   manager="zypper"
-  packages=(spectacle tesseract-ocr tesseract-ocr-traineddata-eng pipewire-tools ffmpeg git python3 python3-pip python3-virtualenv libnotify-tools)
+  packages=(spectacle tesseract-ocr tesseract-ocr-traineddata-eng pipewire-tools ImageMagick ffmpeg git python3 python3-pip python3-virtualenv libnotify-tools)
   [[ "$WITH_HEBREW" == "1" ]] && packages+=(tesseract-ocr-traineddata-heb)
   cmd=(zypper install "${packages[@]}")
 elif command -v apt-get >/dev/null 2>&1; then
   manager="apt"
-  packages=(spectacle tesseract-ocr tesseract-ocr-eng pipewire-bin ffmpeg git python3 python3-venv python3-pip libnotify-bin)
+  packages=(spectacle tesseract-ocr tesseract-ocr-eng pipewire-bin imagemagick ffmpeg git python3 python3-venv python3-pip libnotify-bin)
   [[ "$WITH_HEBREW" == "1" ]] && packages+=(tesseract-ocr-heb)
   cmd=(apt-get install "${packages[@]}")
 elif command -v dnf >/dev/null 2>&1; then
   manager="dnf"
-  packages=(spectacle tesseract tesseract-langpack-eng pipewire-utils ffmpeg git python3 python3-pip libnotify)
+  packages=(spectacle tesseract tesseract-langpack-eng pipewire-utils ImageMagick ffmpeg git python3 python3-pip libnotify)
   [[ "$WITH_HEBREW" == "1" ]] && packages+=(tesseract-langpack-heb)
   cmd=(dnf install "${packages[@]}")
 elif command -v pacman >/dev/null 2>&1; then
   manager="pacman"
-  packages=(spectacle tesseract tesseract-data-eng pipewire ffmpeg git python python-pip python-virtualenv libnotify)
+  packages=(spectacle tesseract tesseract-data-eng pipewire imagemagick ffmpeg git python python-pip python-virtualenv libnotify)
   [[ "$WITH_HEBREW" == "1" ]] && packages+=(tesseract-data-heb)
   cmd=(pacman -S "${packages[@]}")
 else
@@ -86,7 +87,7 @@ else
 Could not detect zypper, apt-get, dnf, or pacman.
 
 Install these native tools with your distro package manager:
-  spectacle tesseract English-traineddata pw-play/pw-record ffmpeg git python3 python3-venv notify-send
+  spectacle tesseract English-traineddata pw-play/pw-record ImageMagick ffmpeg git python3 python3-venv notify-send
 EOF
   exit 1
 fi

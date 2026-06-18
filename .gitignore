@@ -6,6 +6,7 @@
 .pytest_cache/
 __pycache__/
 *.pyc
+tmp/
 models/
 
 # Local machine/user configuration.

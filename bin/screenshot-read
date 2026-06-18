@@ -144,6 +144,9 @@ TESSERACT="${STTS_TESSERACT:-tesseract}"
 PLAYER="${STTS_PLAYER:-pw-play}"
 OCR_LANG="${STTS_OCR_LANG:-eng}"
 OCR_PSM="${STTS_OCR_PSM:-6}"
+OCR_PREPROCESS="${STTS_OCR_PREPROCESS:-auto}"
+OCR_PREPROCESS_MIN_CONFIDENCE="${STTS_OCR_PREPROCESS_MIN_CONFIDENCE:-50}"
+OCR_PREPROCESS_MIN_WORDS="${STTS_OCR_PREPROCESS_MIN_WORDS:-3}"
 MODEL="${STTS_OMNIVOICE_MODEL:-k2-fsa/OmniVoice}"
 DEVICE="${STTS_OMNIVOICE_DEVICE:-}"
 LANGUAGE="${STTS_OMNIVOICE_LANGUAGE:-}"
@@ -226,6 +229,7 @@ fi
 
 timestamp="$(date '+%Y%m%d-%H%M%S')"
 shot="$RUN_DIR/selection-$timestamp.png"
+ocr_preprocessed="$RUN_DIR/selection-$timestamp.preprocessed.png"
 ocr_file="$RUN_DIR/ocr-$timestamp.txt"
 audio="$RUN_DIR/speech-$timestamp.wav"
 tts_log="$RUN_DIR/tts-$timestamp.log"
@@ -237,7 +241,7 @@ cleanup() {
     clear_active_state
   fi
   if [[ "$KEEP_ARTIFACTS" != "1" ]]; then
-    rm -f -- "$shot" "$ocr_file" "$audio"
+    rm -f -- "$shot" "$ocr_preprocessed" "$ocr_file" "$audio"
     if [[ "$FAILED" != "1" ]]; then
       rm -f -- "$tts_log"
     fi
@@ -253,8 +257,16 @@ if ! "$SPECTACLE" --region --background --nonotify --output "$shot"; then
 fi
 [[ -s "$shot" ]] || die "Spectacle did not create a screenshot."
 
-log "Starting OCR with language $OCR_LANG"
-if ! "$TESSERACT" "$shot" stdout -l "$OCR_LANG" --psm "$OCR_PSM" >"$ocr_file" 2>>"$LOG_FILE"; then
+log "Starting OCR with language $OCR_LANG psm=$OCR_PSM preprocess=$OCR_PREPROCESS"
+if ! "$PYTHON" "$PROJECT_DIR/bin/ocr-image" \
+  --image "$shot" \
+  --output "$ocr_file" \
+  --lang "$OCR_LANG" \
+  --psm "$OCR_PSM" \
+  --preprocess "$OCR_PREPROCESS" \
+  --min-confidence "$OCR_PREPROCESS_MIN_CONFIDENCE" \
+  --min-words "$OCR_PREPROCESS_MIN_WORDS" \
+  --preprocessed-image "$ocr_preprocessed" >>"$LOG_FILE" 2>&1; then
   die "OCR failed. Check that Tesseract and traineddata for '$OCR_LANG' are installed."
 fi
 

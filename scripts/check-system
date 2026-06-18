@@ -24,6 +24,7 @@ check_cmd tesseract
 check_cmd pw-play
 check_cmd pw-record
 check_cmd ffmpeg
+check_cmd magick
 check_cmd uv
 check_cmd kbuildsycoca6
 check_cmd gdbus

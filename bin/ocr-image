@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""OCR an image with optional confidence-based preprocessing fallback."""
+
+from __future__ import annotations
+
+import argparse
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="OCR an image with Tesseract")
+    p.add_argument("--image", required=True, help="Input image")
+    p.add_argument("--output", required=True, help="Output OCR text file")
+    p.add_argument("--lang", default="eng")
+    p.add_argument("--psm", default="6")
+    p.add_argument("--preprocess", choices=["off", "raw", "always", "auto"], default="auto")
+    p.add_argument("--min-confidence", type=float, default=50.0)
+    p.add_argument("--min-words", type=int, default=3)
+    p.add_argument("--preprocessed-image", help="Where to write the preprocessed image")
+    return p
+
+
+def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+def ocr_text(image: Path, lang: str, psm: str) -> tuple[str, str, int]:
+    proc = run(["tesseract", str(image), "stdout", "-l", lang, "--psm", psm])
+    return proc.stdout, proc.stderr, proc.returncode
+
+
+def confidence(image: Path, lang: str, psm: str) -> tuple[float, int, str]:
+    proc = run(["tesseract", str(image), "stdout", "-l", lang, "--psm", psm, "tsv"])
+    if proc.returncode != 0:
+        return -1.0, 0, proc.stderr
+
+    values: list[float] = []
+    for line in proc.stdout.splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) < 12 or not parts[11].strip():
+            continue
+        try:
+            value = float(parts[10])
+        except ValueError:
+            continue
+        if value >= 0:
+            values.append(value)
+    if not values:
+        return -1.0, 0, proc.stderr
+    return sum(values) / len(values), len(values), proc.stderr
+
+
+def preprocess(input_image: Path, output_image: Path) -> None:
+    if not shutil.which("magick"):
+        raise RuntimeError("ImageMagick 'magick' is required for OCR preprocessing")
+    proc = run(
+        [
+            "magick",
+            str(input_image),
+            "-colorspace",
+            "Gray",
+            "-resize",
+            "200%",
+            "-sigmoidal-contrast",
+            "8x50%",
+            "-sharpen",
+            "0x1",
+            str(output_image),
+        ]
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "ImageMagick preprocessing failed")
+
+
+def write_output(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def main() -> int:
+    args = parser().parse_args()
+    image = Path(args.image)
+    output = Path(args.output)
+    mode = "off" if args.preprocess == "raw" else args.preprocess
+
+    if mode in ("off", "auto"):
+        raw_text, raw_stderr, raw_code = ocr_text(image, args.lang, args.psm)
+        if raw_code != 0:
+            sys.stderr.write(raw_stderr)
+            return raw_code
+        if mode == "off":
+            write_output(output, raw_text)
+            print("OCR mode=raw", file=sys.stderr)
+            return 0
+
+        raw_conf, raw_words, raw_conf_stderr = confidence(image, args.lang, args.psm)
+        if raw_conf_stderr:
+            sys.stderr.write(raw_conf_stderr)
+        print(f"OCR raw confidence={raw_conf:.2f} words={raw_words}", file=sys.stderr)
+    else:
+        raw_text = ""
+        raw_conf = -1.0
+        raw_words = 0
+
+    preprocessed = Path(args.preprocessed_image) if args.preprocessed_image else output.with_suffix(".preprocessed.png")
+    try:
+        preprocess(image, preprocessed)
+    except Exception as exc:
+        if mode == "auto" and raw_text:
+            write_output(output, raw_text)
+            print(f"OCR preprocessing failed; selected=raw error={exc}", file=sys.stderr)
+            return 0
+        print(f"OCR preprocessing failed: {exc}", file=sys.stderr)
+        return 1
+
+    pre_text, pre_stderr, pre_code = ocr_text(preprocessed, args.lang, args.psm)
+    if pre_code != 0:
+        if mode == "auto" and raw_text:
+            write_output(output, raw_text)
+            sys.stderr.write(pre_stderr)
+            print("OCR preprocessed failed; selected=raw", file=sys.stderr)
+            return 0
+        sys.stderr.write(pre_stderr)
+        return pre_code
+
+    pre_conf, pre_words, pre_conf_stderr = confidence(preprocessed, args.lang, args.psm)
+    if pre_conf_stderr:
+        sys.stderr.write(pre_conf_stderr)
+    print(f"OCR preprocessed confidence={pre_conf:.2f} words={pre_words}", file=sys.stderr)
+
+    recovered_words = pre_words >= max(raw_words + 4, int(raw_words * 1.35))
+    confidence_close = pre_conf >= raw_conf - 10
+    confidence_better = pre_conf >= raw_conf + 8 and pre_words >= raw_words
+    stable_words_better_confidence = pre_words == raw_words and pre_conf >= raw_conf + 2
+    raw_weak = raw_words < args.min_words or raw_conf < args.min_confidence
+
+    if (
+        mode == "auto"
+        and not raw_weak
+        and not (recovered_words and confidence_close)
+        and not confidence_better
+        and not stable_words_better_confidence
+    ):
+        write_output(output, raw_text)
+        print("OCR selected=raw", file=sys.stderr)
+    else:
+        write_output(output, pre_text)
+        print("OCR selected=preprocessed", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
