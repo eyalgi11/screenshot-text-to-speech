@@ -243,9 +243,11 @@ inspectable self-contained `report.html` under `tmp/ocr-stress/latest`. Use
 and the app's automatic fallback.
 
 Some generated images are required baseline cases; harder symbol-clutter,
-photo-like, dark-overlay, and web-card images are challenge cases. Challenge
-cases can show `WARN` when OCR reads non-text UI marks or decorative symbols as
-speech text, while the command only exits nonzero for required-case failures.
+photo-like, dark-overlay, web-card, and real-world Commons fixture images are
+challenge cases. Real image fixtures live under `testdata/real-ocr-images` with
+source/license metadata. Challenge cases can show `WARN` when OCR reads non-text
+UI marks, decorative symbols, or hard real-world photos poorly, while the
+command only exits nonzero for required-case failures.
 
 The checker does not download OmniVoice model weights. The first real OmniVoice
 generation may download the model from Hugging Face into the normal cache.
