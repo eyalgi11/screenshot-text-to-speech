@@ -1164,25 +1164,49 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       margin-bottom: 18px;
     }}
     .report-controls {{
+      position: sticky;
+      top: 0;
+      z-index: 20;
       display: flex;
       align-items: center;
       justify-content: flex-end;
-      gap: 8px;
-      margin: 0 0 10px;
+      gap: 12px;
+      margin: 0 0 12px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 6px 18px rgba(31, 35, 40, 0.08);
     }}
-    .report-controls label {{
+    .report-controls span {{
       color: var(--muted);
       font-size: 13px;
       font-weight: 700;
     }}
-    .report-controls select {{
-      min-height: 34px;
+    .segmented {{
+      display: inline-flex;
+      overflow: hidden;
       border: 1px solid var(--line);
       border-radius: 6px;
       background: var(--panel);
+    }}
+    .order-button {{
+      min-height: 34px;
+      border: 0;
+      border-left: 1px solid var(--line);
+      background: transparent;
       color: var(--ink);
-      padding: 4px 30px 4px 10px;
+      padding: 4px 12px;
       font: inherit;
+      cursor: pointer;
+    }}
+    .order-button:first-child {{
+      border-left: 0;
+    }}
+    .order-button.is-active {{
+      background: var(--accent);
+      color: #ffffff;
+      font-weight: 700;
     }}
     table {{
       width: 100%;
@@ -1224,6 +1248,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
     .case {{
       padding: 16px;
       margin-top: 16px;
+      scroll-margin-top: 76px;
     }}
     .case-head {{
       display: flex;
@@ -1313,7 +1338,9 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       main {{ width: min(100% - 20px, 1180px); padding-top: 18px; }}
       .inspect-grid {{ grid-template-columns: 1fr; }}
       .case-head {{ align-items: stretch; flex-direction: column; }}
-      .report-controls {{ justify-content: flex-start; }}
+      .report-controls {{ align-items: stretch; flex-direction: column; }}
+      .segmented {{ display: flex; }}
+      .order-button {{ flex: 1; }}
     }}
   </style>
 </head>
@@ -1332,11 +1359,11 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       <div class="stat"><span>Mode</span><b>{esc(mode)}</b></div>
     </section>
     <section class="report-controls" aria-label="Report controls">
-      <label for="case-order">Case order</label>
-      <select id="case-order">
-        <option value="oldest" selected>Oldest to newest</option>
-        <option value="newest">Newest to oldest</option>
-      </select>
+      <span>Order</span>
+      <div class="segmented" role="group" aria-label="Case order">
+        <button class="order-button is-active" type="button" data-order="oldest" aria-pressed="true">Oldest to newest</button>
+        <button class="order-button" type="button" data-order="newest" aria-pressed="false">Newest to oldest</button>
+      </div>
     </section>
     <section class="table-wrap" aria-label="Result table">
       <table>
@@ -1362,11 +1389,12 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
   </main>
   <script>
     (() => {{
-      const select = document.getElementById("case-order");
+      const buttons = Array.from(document.querySelectorAll(".order-button"));
       const tbody = document.querySelector("tbody");
       const main = document.querySelector("main");
       const rows = Array.from(tbody.querySelectorAll("tr"));
       const cases = Array.from(document.querySelectorAll("section.case"));
+      let currentOrder = "oldest";
 
       const compareByOrder = (direction) => (left, right) => {{
         const leftCase = Number(left.dataset.caseOrder);
@@ -1378,12 +1406,26 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       }};
 
       const applyOrder = () => {{
-        const direction = select.value;
-        rows.slice().sort(compareByOrder(direction)).forEach((row) => tbody.appendChild(row));
-        cases.slice().sort(compareByOrder(direction)).forEach((card) => main.appendChild(card));
+        rows.slice().sort(compareByOrder(currentOrder)).forEach((row) => tbody.appendChild(row));
+        cases.slice().sort(compareByOrder(currentOrder)).forEach((card) => main.appendChild(card));
       }};
 
-      select.addEventListener("change", applyOrder);
+      const setOrder = (order) => {{
+        currentOrder = order;
+        buttons.forEach((button) => {{
+          const isActive = button.dataset.order === order;
+          button.classList.toggle("is-active", isActive);
+          button.setAttribute("aria-pressed", String(isActive));
+        }});
+        applyOrder();
+        if (location.hash) {{
+          document.querySelector(location.hash)?.scrollIntoView({{ block: "start" }});
+        }}
+      }};
+
+      buttons.forEach((button) => {{
+        button.addEventListener("click", () => setOrder(button.dataset.order));
+      }});
       applyOrder();
     }})();
   </script>
