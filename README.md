@@ -207,6 +207,15 @@ Important options:
   image when OCR confidence is weak.
 - `STTS_OCR_PREPROCESS_MIN_CONFIDENCE=50` and
   `STTS_OCR_PREPROCESS_MIN_WORDS=3` tune the automatic fallback.
+- `STTS_OCR_QUALITY_GATE=normal`, `strict`, or `off`. `normal` blocks
+  obviously unreliable OCR before TTS so bad captures do not get read aloud as
+  nonsense.
+- `STTS_OCR_QUALITY_MIN_CONFIDENCE=35`,
+  `STTS_OCR_QUALITY_MAX_JUNK_RATIO=0.42`, and
+  `STTS_OCR_QUALITY_MIN_AGREEMENT=0.60` tune that gate.
+- `STTS_OCR_FALLBACK_BIN=/path/to/ocr-backend` optionally tries another OCR
+  command when the primary OCR is blocked. The command must accept
+  `--image`, `--output`, `--lang`, and `--psm`.
 - `STTS_REF_AUDIO` and `STTS_REF_TEXT_FILE` for a local reference voice.
 - `STTS_OMNIVOICE_INSTRUCT` for voice design without cloning a real person.
 - `STTS_OMNIVOICE_DEVICE=cuda:0` to force a GPU, or leave empty for auto.

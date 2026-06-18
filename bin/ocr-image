@@ -4,10 +4,28 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
+
+
+BIDI_MARKS = {
+    "\u200e",
+    "\u200f",
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
+    "\u2066",
+    "\u2067",
+    "\u2068",
+    "\u2069",
+}
 
 
 def parser() -> argparse.ArgumentParser:
@@ -20,6 +38,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--min-confidence", type=float, default=50.0)
     p.add_argument("--min-words", type=int, default=3)
     p.add_argument("--preprocessed-image", help="Where to write the preprocessed image")
+    p.add_argument("--metrics-output", help="Where to write OCR diagnostics JSON")
     return p
 
 
@@ -51,6 +70,76 @@ def confidence(image: Path, lang: str, psm: str) -> tuple[float, int, str]:
     if not values:
         return -1.0, 0, proc.stderr
     return sum(values) / len(values), len(values), proc.stderr
+
+
+def normalize_for_similarity(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text).lower()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def levenshtein(a: str, b: str) -> int:
+    if len(a) < len(b):
+        a, b = b, a
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            insert = current[j - 1] + 1
+            delete = previous[j] + 1
+            replace = previous[j - 1] + (ca != cb)
+            current.append(min(insert, delete, replace))
+        previous = current
+    return previous[-1]
+
+
+def similarity(a: str, b: str) -> float | None:
+    a_norm = normalize_for_similarity(a)
+    b_norm = normalize_for_similarity(b)
+    if not a_norm and not b_norm:
+        return 1.0
+    denominator = max(len(a_norm), len(b_norm), 1)
+    return max(0.0, 1.0 - levenshtein(a_norm, b_norm) / denominator)
+
+
+def text_stats(text: str) -> dict[str, int | float | dict[str, int]]:
+    nonspace = [ch for ch in text if not ch.isspace()]
+    text_chars = len(nonspace)
+    letter_chars = sum(1 for ch in nonspace if ch.isalpha())
+    digit_chars = sum(1 for ch in nonspace if ch.isdigit())
+    control_chars = sum(1 for ch in nonspace if ch not in BIDI_MARKS and unicodedata.category(ch).startswith("C"))
+    symbol_chars = sum(1 for ch in nonspace if unicodedata.category(ch).startswith("S"))
+    tokens = [token for token in re.split(r"\s+", text.strip()) if any(ch.isalnum() for ch in token)]
+    script_counts = {
+        "latin": sum(1 for ch in nonspace if "LATIN" in unicodedata.name(ch, "")),
+        "hebrew": sum(1 for ch in nonspace if "\u0590" <= ch <= "\u05ff"),
+    }
+    suspicious_chars = control_chars + symbol_chars
+    return {
+        "text_chars": text_chars,
+        "word_tokens": len(tokens),
+        "letter_chars": letter_chars,
+        "digit_chars": digit_chars,
+        "control_chars": control_chars,
+        "symbol_chars": symbol_chars,
+        "junk_ratio": suspicious_chars / max(text_chars, 1),
+        "script_counts": script_counts,
+    }
+
+
+def candidate_metrics(text: str, confidence_value: float, confidence_words: int) -> dict[str, object]:
+    return {
+        "confidence": confidence_value,
+        "tsv_words": confidence_words,
+        **text_stats(text),
+    }
+
+
+def write_metrics(path: str | None, metrics: dict[str, object]) -> None:
+    if not path:
+        return
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def preprocess(input_image: Path, output_image: Path) -> None:
@@ -85,20 +174,33 @@ def main() -> int:
     image = Path(args.image)
     output = Path(args.output)
     mode = "off" if args.preprocess == "raw" else args.preprocess
+    metrics: dict[str, object] = {
+        "engine": "tesseract",
+        "lang": args.lang,
+        "psm": args.psm,
+        "preprocess": args.preprocess,
+        "selected": None,
+        "candidates": {},
+    }
+    candidates = metrics["candidates"]
+    assert isinstance(candidates, dict)
 
     if mode in ("off", "auto"):
         raw_text, raw_stderr, raw_code = ocr_text(image, args.lang, args.psm)
         if raw_code != 0:
             sys.stderr.write(raw_stderr)
             return raw_code
-        if mode == "off":
-            write_output(output, raw_text)
-            print("OCR mode=raw", file=sys.stderr)
-            return 0
-
         raw_conf, raw_words, raw_conf_stderr = confidence(image, args.lang, args.psm)
         if raw_conf_stderr:
             sys.stderr.write(raw_conf_stderr)
+        candidates["raw"] = candidate_metrics(raw_text, raw_conf, raw_words)
+        if mode == "off":
+            write_output(output, raw_text)
+            metrics["selected"] = "raw"
+            write_metrics(args.metrics_output, metrics)
+            print("OCR mode=raw", file=sys.stderr)
+            return 0
+
         print(f"OCR raw confidence={raw_conf:.2f} words={raw_words}", file=sys.stderr)
     else:
         raw_text = ""
@@ -111,6 +213,9 @@ def main() -> int:
     except Exception as exc:
         if mode == "auto" and raw_text:
             write_output(output, raw_text)
+            metrics["selected"] = "raw"
+            metrics["preprocess_error"] = str(exc)
+            write_metrics(args.metrics_output, metrics)
             print(f"OCR preprocessing failed; selected=raw error={exc}", file=sys.stderr)
             return 0
         print(f"OCR preprocessing failed: {exc}", file=sys.stderr)
@@ -129,6 +234,9 @@ def main() -> int:
     pre_conf, pre_words, pre_conf_stderr = confidence(preprocessed, args.lang, args.psm)
     if pre_conf_stderr:
         sys.stderr.write(pre_conf_stderr)
+    candidates["preprocessed"] = candidate_metrics(pre_text, pre_conf, pre_words)
+    if raw_text:
+        metrics["raw_preprocessed_similarity"] = similarity(raw_text, pre_text)
     print(f"OCR preprocessed confidence={pre_conf:.2f} words={pre_words}", file=sys.stderr)
 
     recovered_words = pre_words >= max(raw_words + 4, int(raw_words * 1.35))
@@ -147,10 +255,13 @@ def main() -> int:
         and not cleaner_high_confidence
     ):
         write_output(output, raw_text)
+        metrics["selected"] = "raw"
         print("OCR selected=raw", file=sys.stderr)
     else:
         write_output(output, pre_text)
+        metrics["selected"] = "preprocessed"
         print("OCR selected=preprocessed", file=sys.stderr)
+    write_metrics(args.metrics_output, metrics)
     return 0
 
 

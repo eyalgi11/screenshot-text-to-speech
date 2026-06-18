@@ -26,7 +26,7 @@ for file in "${shell_files[@]}"; do
   bash -n "$file"
 done
 
-python3 -m py_compile bin/blue-hebrew-say bin/detect-text-language bin/ocr-image bin/omnivoice-say bin/pause-hotkey-daemon bin/wayland-pause-evdev-daemon scripts/ocr-bakeoff scripts/stress-ocr
+python3 -m py_compile bin/blue-hebrew-say bin/detect-text-language bin/ocr-image bin/ocr-quality-gate bin/omnivoice-say bin/pause-hotkey-daemon bin/wayland-pause-evdev-daemon scripts/ocr-bakeoff scripts/stress-ocr
 python3 - <<'PY'
 import runpy
 
@@ -35,6 +35,12 @@ strip_language_tags = blue["strip_language_tags"]
 assert strip_language_tags("<he>shalom</he>") == "shalom"
 assert strip_language_tags("<he>foo</he> <en>bar</en>") == "foo bar"
 PY
+
+printf 'Hello world' | bin/ocr-quality-gate >/dev/null
+if printf '@@@@' | bin/ocr-quality-gate >/dev/null; then
+  echo "OCR quality gate did not block junk text." >&2
+  exit 1
+fi
 
 hebrew_detection="$(printf 'שלום עולם' | bin/detect-text-language)"
 printf '%s\n' "$hebrew_detection" | grep -F 'route=hebrew' >/dev/null

@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Decide whether OCR output is reliable enough to send to TTS."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import unicodedata
+from pathlib import Path
+from typing import Any
+
+
+BIDI_MARKS = {
+    "\u200e",
+    "\u200f",
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
+    "\u2066",
+    "\u2067",
+    "\u2068",
+    "\u2069",
+}
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Block obviously unreliable OCR before TTS")
+    p.add_argument("--metrics", help="OCR metrics JSON from bin/ocr-image")
+    p.add_argument("--gate", choices=["off", "normal", "strict"], default="normal")
+    p.add_argument("--min-confidence", type=float, default=35.0)
+    p.add_argument("--min-words", type=int, default=2)
+    p.add_argument("--min-chars", type=int, default=4)
+    p.add_argument("--max-junk-ratio", type=float, default=0.42)
+    p.add_argument("--min-agreement", type=float, default=0.60)
+    return p
+
+
+def text_stats(text: str) -> dict[str, int | float]:
+    nonspace = [ch for ch in text if not ch.isspace()]
+    text_chars = len(nonspace)
+    tokens = [token for token in re.split(r"\s+", text.strip()) if any(ch.isalnum() for ch in token)]
+    control_chars = sum(1 for ch in nonspace if ch not in BIDI_MARKS and unicodedata.category(ch).startswith("C"))
+    symbol_chars = sum(1 for ch in nonspace if unicodedata.category(ch).startswith("S"))
+    return {
+        "text_chars": text_chars,
+        "word_tokens": len(tokens),
+        "control_chars": control_chars,
+        "symbol_chars": symbol_chars,
+        "junk_ratio": (control_chars + symbol_chars) / max(text_chars, 1),
+    }
+
+
+def load_metrics(path: str | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    metrics_path = Path(path)
+    if not metrics_path.exists():
+        return {}
+    return json.loads(metrics_path.read_text(encoding="utf-8"))
+
+
+def selected_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    selected = metrics.get("selected")
+    candidates = metrics.get("candidates")
+    if not isinstance(selected, str) or not isinstance(candidates, dict):
+        return {}
+    candidate = candidates.get(selected)
+    return candidate if isinstance(candidate, dict) else {}
+
+
+def alternate_confidence(metrics: dict[str, Any], selected: str | None) -> float:
+    candidates = metrics.get("candidates")
+    if not isinstance(candidates, dict):
+        return -1.0
+    values: list[float] = []
+    for name, candidate in candidates.items():
+        if name == selected or not isinstance(candidate, dict):
+            continue
+        confidence = as_float(candidate.get("confidence"), -1.0)
+        if confidence >= 0:
+            values.append(confidence)
+    return max(values) if values else -1.0
+
+
+def as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def print_report(status: str, reasons: list[str], values: dict[str, object]) -> None:
+    print(f"status={status}")
+    print(f"reasons={','.join(reasons) if reasons else 'none'}")
+    for key, value in values.items():
+        print(f"{key}={value}")
+
+
+def main() -> int:
+    args = parser().parse_args()
+    text = sys.stdin.read()
+    metrics = load_metrics(args.metrics)
+    selected = selected_metrics(metrics)
+    selected_name = metrics.get("selected") if isinstance(metrics.get("selected"), str) else None
+    text_values = text_stats(text)
+
+    confidence = as_float(selected.get("confidence"), -1.0)
+    alt_confidence = alternate_confidence(metrics, selected_name)
+    tsv_words = as_int(selected.get("tsv_words"), 0)
+    text_chars = as_int(selected.get("text_chars"), as_int(text_values["text_chars"], 0))
+    word_tokens = as_int(selected.get("word_tokens"), as_int(text_values["word_tokens"], 0))
+    control_ratio = as_float(selected.get("control_chars"), as_float(text_values["control_chars"], 0.0)) / max(text_chars, 1)
+    junk_ratio = as_float(selected.get("junk_ratio"), as_float(text_values["junk_ratio"], 0.0))
+    agreement = metrics.get("raw_preprocessed_similarity")
+    agreement_value = as_float(agreement, -1.0) if agreement is not None else -1.0
+
+    min_confidence = args.min_confidence
+    min_words = args.min_words
+    min_chars = args.min_chars
+    max_junk_ratio = args.max_junk_ratio
+    min_agreement = args.min_agreement
+    if args.gate == "strict":
+        min_confidence += 10.0
+        min_words = max(min_words, 3)
+        min_chars = max(min_chars, 8)
+        max_junk_ratio = min(max_junk_ratio, 0.30)
+        min_agreement = max(min_agreement, 0.24)
+
+    values: dict[str, object] = {
+        "confidence": f"{confidence:.2f}",
+        "alternate_confidence": f"{alt_confidence:.2f}" if alt_confidence >= 0 else "none",
+        "tsv_words": tsv_words,
+        "word_tokens": word_tokens,
+        "text_chars": text_chars,
+        "junk_ratio": f"{junk_ratio:.3f}",
+        "agreement": f"{agreement_value:.3f}" if agreement_value >= 0 else "none",
+    }
+
+    if args.gate == "off":
+        print_report("pass", [], values)
+        return 0
+
+    reasons: list[str] = []
+    if text_chars == 0:
+        reasons.append("no_text")
+    elif text_chars < min_chars:
+        reasons.append("too_short")
+
+    if word_tokens < min_words and text_chars < 24:
+        reasons.append("too_few_words")
+
+    if confidence >= 0 and tsv_words > 0 and confidence < min_confidence:
+        reasons.append("low_confidence")
+
+    if junk_ratio > max_junk_ratio and (confidence < 0 or confidence < min_confidence + 12.0):
+        reasons.append("junk_heavy")
+
+    if control_ratio > 0.05:
+        reasons.append("control_characters")
+
+    unstable_candidates = agreement_value >= 0 and agreement_value < min_agreement and text_chars >= min_chars
+    alternate_is_plausible = alt_confidence >= 0 and confidence >= 0 and alt_confidence >= confidence - 20.0
+    if unstable_candidates and (confidence < min_confidence + 10.0 or (selected_name == "raw" and alternate_is_plausible)):
+        reasons.append("unstable_ocr_candidates")
+
+    status = "block" if reasons else "pass"
+    print_report(status, reasons, values)
+    return 3 if reasons else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

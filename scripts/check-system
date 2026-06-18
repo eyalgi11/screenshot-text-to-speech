@@ -96,6 +96,22 @@ else
   printf 'OK   voice mode         OmniVoice auto voice\n'
 fi
 
+printf '\nOCR quality gate:\n'
+printf 'OK   quality gate       %s\n' "${STTS_OCR_QUALITY_GATE:-normal}"
+printf 'OK   min confidence     %s\n' "${STTS_OCR_QUALITY_MIN_CONFIDENCE:-35}"
+printf 'OK   max junk ratio     %s\n' "${STTS_OCR_QUALITY_MAX_JUNK_RATIO:-0.42}"
+printf 'OK   min agreement      %s\n' "${STTS_OCR_QUALITY_MIN_AGREEMENT:-0.60}"
+if [[ -n "${STTS_OCR_FALLBACK_BIN:-}" ]]; then
+  if [[ "${STTS_OCR_FALLBACK_BIN:-}" == */* && -x "${STTS_OCR_FALLBACK_BIN:-}" ]] || command -v "${STTS_OCR_FALLBACK_BIN:-}" >/dev/null 2>&1; then
+    printf 'OK   OCR fallback       %s\n' "$STTS_OCR_FALLBACK_BIN"
+  else
+    printf 'MISS OCR fallback       %s\n' "$STTS_OCR_FALLBACK_BIN"
+    warn=1
+  fi
+else
+  printf 'INFO OCR fallback       not configured\n'
+fi
+
 printf '\nHebrew TTS routing:\n'
 printf 'OK   hebrew engine      %s\n' "${STTS_HEBREW_TTS_ENGINE:-auto}"
 printf 'OK   hebrew threshold   %s\n' "${STTS_HEBREW_ROUTE_THRESHOLD:-0.35}"

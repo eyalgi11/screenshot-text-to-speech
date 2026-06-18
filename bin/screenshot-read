@@ -147,6 +147,13 @@ OCR_PSM="${STTS_OCR_PSM:-6}"
 OCR_PREPROCESS="${STTS_OCR_PREPROCESS:-auto}"
 OCR_PREPROCESS_MIN_CONFIDENCE="${STTS_OCR_PREPROCESS_MIN_CONFIDENCE:-50}"
 OCR_PREPROCESS_MIN_WORDS="${STTS_OCR_PREPROCESS_MIN_WORDS:-3}"
+OCR_QUALITY_GATE="${STTS_OCR_QUALITY_GATE:-normal}"
+OCR_QUALITY_MIN_CONFIDENCE="${STTS_OCR_QUALITY_MIN_CONFIDENCE:-35}"
+OCR_QUALITY_MIN_WORDS="${STTS_OCR_QUALITY_MIN_WORDS:-2}"
+OCR_QUALITY_MIN_CHARS="${STTS_OCR_QUALITY_MIN_CHARS:-4}"
+OCR_QUALITY_MAX_JUNK_RATIO="${STTS_OCR_QUALITY_MAX_JUNK_RATIO:-0.42}"
+OCR_QUALITY_MIN_AGREEMENT="${STTS_OCR_QUALITY_MIN_AGREEMENT:-0.60}"
+OCR_FALLBACK_BIN="${STTS_OCR_FALLBACK_BIN:-}"
 MODEL="${STTS_OMNIVOICE_MODEL:-k2-fsa/OmniVoice}"
 DEVICE="${STTS_OMNIVOICE_DEVICE:-}"
 LANGUAGE="${STTS_OMNIVOICE_LANGUAGE:-}"
@@ -212,6 +219,83 @@ detect_text_route() {
   done <<<"$report"
 }
 
+load_ocr_text() {
+  text="$(sed -e 's/[[:space:]]\+$//' "$ocr_file" | awk 'NF {blank=0; print; next} !blank {print ""; blank=1}')"
+  if [[ -z "${text//[[:space:]]/}" ]]; then
+    die "No readable text found in the selected region."
+  fi
+}
+
+check_ocr_quality() {
+  local report exit_code key value
+  ocr_quality_status="unknown"
+  ocr_quality_reasons="none"
+  ocr_quality_confidence="-1"
+  ocr_quality_words="0"
+  ocr_quality_chars="0"
+  ocr_quality_junk_ratio="0"
+  ocr_quality_agreement="none"
+
+  set +e
+  report="$(printf '%s' "$text" | "$PYTHON" "$PROJECT_DIR/bin/ocr-quality-gate" \
+    --metrics "$ocr_metrics" \
+    --gate "$OCR_QUALITY_GATE" \
+    --min-confidence "$OCR_QUALITY_MIN_CONFIDENCE" \
+    --min-words "$OCR_QUALITY_MIN_WORDS" \
+    --min-chars "$OCR_QUALITY_MIN_CHARS" \
+    --max-junk-ratio "$OCR_QUALITY_MAX_JUNK_RATIO" \
+    --min-agreement "$OCR_QUALITY_MIN_AGREEMENT" 2>>"$LOG_FILE")"
+  exit_code=$?
+  set -e
+
+  while IFS='=' read -r key value; do
+    case "$key" in
+      status) ocr_quality_status="$value" ;;
+      reasons) ocr_quality_reasons="$value" ;;
+      confidence) ocr_quality_confidence="$value" ;;
+      word_tokens) ocr_quality_words="$value" ;;
+      text_chars) ocr_quality_chars="$value" ;;
+      junk_ratio) ocr_quality_junk_ratio="$value" ;;
+      agreement) ocr_quality_agreement="$value" ;;
+    esac
+  done <<<"$report"
+
+  log "OCR quality status=$ocr_quality_status reasons=$ocr_quality_reasons confidence=$ocr_quality_confidence words=$ocr_quality_words chars=$ocr_quality_chars junk_ratio=$ocr_quality_junk_ratio agreement=$ocr_quality_agreement"
+
+  case "$exit_code" in
+    0) return 0 ;;
+    3) return 3 ;;
+    *)
+      log "OCR quality checker failed exit=$exit_code report=$report"
+      die "OCR quality check failed."
+      ;;
+  esac
+}
+
+resolve_optional_command() {
+  local command_name="$1"
+  [[ -n "$command_name" ]] || return 1
+  if [[ "$command_name" == */* ]]; then
+    [[ -x "$command_name" ]] || return 1
+  else
+    command -v "$command_name" >/dev/null 2>&1 || return 1
+  fi
+}
+
+run_fallback_ocr() {
+  [[ -n "$OCR_FALLBACK_BIN" ]] || return 1
+  resolve_optional_command "$OCR_FALLBACK_BIN" || die "OCR fallback is not executable: $OCR_FALLBACK_BIN"
+
+  log "Trying OCR fallback: $OCR_FALLBACK_BIN"
+  notify "OCR looked unreliable. Trying fallback OCR."
+  rm -f -- "$ocr_file" "$ocr_metrics"
+  "$OCR_FALLBACK_BIN" \
+    --image "$shot" \
+    --output "$ocr_file" \
+    --lang "$OCR_LANG" \
+    --psm "$OCR_PSM" >>"$LOG_FILE" 2>&1
+}
+
 LOCK_FILE="$RUN_DIR/lock"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
@@ -231,6 +315,7 @@ timestamp="$(date '+%Y%m%d-%H%M%S')"
 shot="$RUN_DIR/selection-$timestamp.png"
 ocr_preprocessed="$RUN_DIR/selection-$timestamp.preprocessed.png"
 ocr_file="$RUN_DIR/ocr-$timestamp.txt"
+ocr_metrics="$RUN_DIR/ocr-$timestamp.metrics.json"
 audio="$RUN_DIR/speech-$timestamp.wav"
 tts_log="$RUN_DIR/tts-$timestamp.log"
 
@@ -241,7 +326,7 @@ cleanup() {
     clear_active_state
   fi
   if [[ "$KEEP_ARTIFACTS" != "1" ]]; then
-    rm -f -- "$shot" "$ocr_preprocessed" "$ocr_file" "$audio"
+    rm -f -- "$shot" "$ocr_preprocessed" "$ocr_file" "$ocr_metrics" "$audio"
     if [[ "$FAILED" != "1" ]]; then
       rm -f -- "$tts_log"
     fi
@@ -266,13 +351,22 @@ if ! "$PYTHON" "$PROJECT_DIR/bin/ocr-image" \
   --preprocess "$OCR_PREPROCESS" \
   --min-confidence "$OCR_PREPROCESS_MIN_CONFIDENCE" \
   --min-words "$OCR_PREPROCESS_MIN_WORDS" \
-  --preprocessed-image "$ocr_preprocessed" >>"$LOG_FILE" 2>&1; then
+  --preprocessed-image "$ocr_preprocessed" \
+  --metrics-output "$ocr_metrics" >>"$LOG_FILE" 2>&1; then
   die "OCR failed. Check that Tesseract and traineddata for '$OCR_LANG' are installed."
 fi
 
-text="$(sed -e 's/[[:space:]]\+$//' "$ocr_file" | awk 'NF {blank=0; print; next} !blank {print ""; blank=1}')"
-if [[ -z "${text//[[:space:]]/}" ]]; then
-  die "No readable text found in the selected region."
+load_ocr_text
+if ! check_ocr_quality; then
+  primary_quality_reasons="$ocr_quality_reasons"
+  if run_fallback_ocr; then
+    load_ocr_text
+    if ! check_ocr_quality; then
+      die "OCR fallback also looked unreliable ($ocr_quality_reasons). I did not read it aloud."
+    fi
+  else
+    die "OCR looked unreliable ($primary_quality_reasons). I did not read it aloud. Try selecting a tighter or clearer region."
+  fi
 fi
 
 detect_text_route
