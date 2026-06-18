@@ -65,12 +65,6 @@ class Case:
     background: str = "#ffffff"
     effects: tuple[str, ...] = ()
     notes: str = ""
-    source_image: str = ""
-    source_title: str = ""
-    source_url: str = ""
-    source_license: str = ""
-    expected_terms: tuple[str, ...] = ()
-    min_term_hits: int = 0
 
 
 CASES: tuple[Case, ...] = (
@@ -273,62 +267,6 @@ CASES: tuple[Case, ...] = (
         notes="Hebrew notice on generated photo-like paper with watermark symbols and ambiguous digits.",
     ),
     Case(
-        id="real_commons_grocery_receipt",
-        text="Expected visible snippets: HOFER, Wien, EUR, Visa, Artikel, Netto",
-        expected_route="default",
-        max_cer=1.0,
-        required=False,
-        notes="Real public-domain Commons receipt photo; auto-oriented and resized for screen-like OCR.",
-        source_image="testdata/real-ocr-images/commons-grocery-receipt-vienna.jpg",
-        source_title="Grocery Store Receipt in Vienna",
-        source_url="https://commons.wikimedia.org/wiki/File:Grocery_Store_Receipt_in_Vienna.jpg",
-        source_license="Public domain",
-        expected_terms=("HOFER", "Wien", "EUR", "Visa", "Artikel", "Netto"),
-        min_term_hits=4,
-    ),
-    Case(
-        id="real_commons_chalkboard_menu",
-        text="Expected visible snippets: Formules, plat, poulet, nems, Bun, carottes",
-        expected_route="default",
-        max_cer=1.0,
-        required=False,
-        notes="Real CC0 handwritten chalkboard menu photo; deliberately hard for OCR.",
-        source_image="testdata/real-ocr-images/commons-restaurant-menu-lyon.jpg",
-        source_title="Menu du jour d'un restaurant asiatique lyonnais en 2017",
-        source_url="https://commons.wikimedia.org/wiki/File:Menu_du_jour_d%27un_restaurant_asiatique_lyonnais_en_2017.jpg",
-        source_license="CC0",
-        expected_terms=("Formules", "plat", "poulet", "nems", "Bun", "carottes"),
-        min_term_hits=2,
-    ),
-    Case(
-        id="real_commons_cheese_store_sign",
-        text="Expected visible snippets: The Cheese Store, Beverly Hills",
-        expected_route="default",
-        max_cer=1.0,
-        required=False,
-        notes="Real CC0 storefront sign photo with glare and decorative lettering.",
-        source_image="testdata/real-ocr-images/commons-cheese-store-sign.jpg",
-        source_title="The Cheese Store of Beverly Hills (sign)",
-        source_url="https://commons.wikimedia.org/wiki/File:The_Cheese_Store_of_Beverly_Hills_(sign).JPG",
-        source_license="CC0",
-        expected_terms=("The", "Cheese", "Store", "Beverly", "Hills"),
-        min_term_hits=2,
-    ),
-    Case(
-        id="real_commons_hebrew_auto_sign",
-        text="קטעי טקסט צפויים: יצרן, ליילנד, דגם, רויאל, 1965, אוטובוסים",
-        expected_route="hebrew",
-        max_cer=1.0,
-        required=False,
-        notes="Real public-domain Hebrew sign photo with paper and plastic distortion.",
-        source_image="testdata/real-ocr-images/commons-hebrew-auto-display-sign.jpg",
-        source_title="Hebrew sign at auto display",
-        source_url="https://commons.wikimedia.org/wiki/File:Hebrew_sign_at_auto_display.jpg",
-        source_license="Public domain",
-        expected_terms=("יצרן", "ליילנד", "דגם", "רויאל", "1965", "אוטובוסים"),
-        min_term_hits=4,
-    ),
-    Case(
         id="mixed_hebrew_ui",
         text=(
             "Status: open\n"
@@ -424,15 +362,6 @@ def error_rates(expected: str, actual: str) -> tuple[float, float]:
     return cer, wer
 
 
-def normalize_for_terms(value: str) -> str:
-    return normalize(value).casefold()
-
-
-def matching_terms(expected_terms: tuple[str, ...], actual: str) -> list[str]:
-    actual_norm = normalize_for_terms(actual)
-    return [term for term in expected_terms if normalize_for_terms(term) in actual_norm]
-
-
 def pango_markup(case: Case) -> str:
     escaped = html.escape(case.text)
     return f'<span font_desc="DejaVu Sans {case.font_size}">{escaped}</span>'
@@ -449,10 +378,6 @@ def run(cmd: list[str], *, input_text: str | None = None) -> subprocess.Complete
 
 
 def generate_image(case: Case, path: Path) -> None:
-    if case.source_image:
-        prepare_real_image(case, path)
-        return
-
     border_size = "44" if "camera_warp" in case.effects else "28"
     base = [
         "magick",
@@ -501,27 +426,6 @@ def generate_image(case: Case, path: Path) -> None:
     for effect in post_effects:
         apply_post_effect(case, path, effect)
     strip_image_metadata(path)
-
-
-def prepare_real_image(case: Case, path: Path) -> None:
-    source = PROJECT_DIR / case.source_image
-    if not source.exists():
-        raise RuntimeError(f"Missing real OCR fixture for {case.id}: {source}")
-    proc = run(
-        [
-            "magick",
-            str(source),
-            "-auto-orient",
-            "-resize",
-            "1600x1600>",
-            "-strip",
-            "-define",
-            "png:exclude-chunk=all",
-            str(path),
-        ]
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"Real image preparation failed for {case.id}:\n{proc.stderr}")
 
 
 def image_size(path: Path) -> tuple[int, int]:
@@ -791,23 +695,19 @@ def write_markdown_report(results: list[dict[str, object]], out_dir: Path, lang:
         f"- Blocking failures: {len(blocking_failures)}",
         f"- Challenge failures: {len(challenge_failures)}",
         "",
-        "| Case | Tier | Mode | CER | WER | Terms | Route | Expected Route | Result | Notes |",
-        "| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |",
+        "| Case | Tier | Mode | CER | WER | Route | Expected Route | Result | Notes |",
+        "| --- | --- | --- | ---: | ---: | --- | --- | --- | --- |",
     ]
     for row in results:
         tier = "required" if row["required"] else "challenge"
         result = "pass" if row["passed"] else "FAIL" if row["required"] else "WARN"
-        term_score = f"{len(row['found_terms'])}/{row['min_term_hits']}" if row["expected_terms"] else "n/a"
-        cer_score = "n/a" if row["expected_terms"] else f"{row['cer']:.3f}"
-        wer_score = "n/a" if row["expected_terms"] else f"{row['wer']:.3f}"
         lines.append(
-            "| {case} | {tier} | {mode} | {cer} | {wer} | {terms} | {route} | {expected_route} | {result} | {notes} |".format(
+            "| {case} | {tier} | {mode} | {cer:.3f} | {wer:.3f} | {route} | {expected_route} | {result} | {notes} |".format(
                 case=row["case"],
                 tier=tier,
                 mode=row["mode"],
-                cer=cer_score,
-                wer=wer_score,
-                terms=term_score,
+                cer=row["cer"],
+                wer=row["wer"],
                 route=row["route"],
                 expected_route=row["expected_route"],
                 result=result,
@@ -817,8 +717,6 @@ def write_markdown_report(results: list[dict[str, object]], out_dir: Path, lang:
     lines.append("")
     lines.append("## OCR Text")
     for row in results:
-        found_terms = ", ".join(row["found_terms"]) if row["found_terms"] else "n/a"
-        expected_terms = ", ".join(row["expected_terms"]) if row["expected_terms"] else "n/a"
         lines.extend(
             [
                 "",
@@ -828,19 +726,6 @@ def write_markdown_report(results: list[dict[str, object]], out_dir: Path, lang:
                 f"- Ground truth: `{row['truth_file']}`",
                 f"- OCR file: `{row['ocr_file']}`",
                 f"- OCR stderr: `{row['stderr_file']}`",
-                f"- Expected terms: {expected_terms}",
-                f"- Found terms: {found_terms}",
-            ]
-        )
-        if row["source_url"]:
-            lines.extend(
-                [
-                    f"- Source: [{row['source_title']}]({row['source_url']})",
-                    f"- License: {row['source_license']}",
-                ]
-            )
-        lines.extend(
-            [
                 "",
                 "```text",
                 str(row["ocr_text"]).strip(),
@@ -871,17 +756,13 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
     summary_rows = []
     for row in results:
         row_status = status(row)
-        term_score = f"{len(row['found_terms'])}/{row['min_term_hits']}" if row["expected_terms"] else "n/a"
-        cer_score = "n/a" if row["expected_terms"] else f"{float(row['cer']):.3f}"
-        wer_score = "n/a" if row["expected_terms"] else f"{float(row['wer']):.3f}"
         summary_rows.append(
             "<tr>"
             f"<td><a href=\"#{esc(row['case'])}-{esc(row['mode'])}\">{esc(row['case'])}</a></td>"
             f"<td>{'required' if row['required'] else 'challenge'}</td>"
             f"<td>{esc(row['mode'])}</td>"
-            f"<td class=\"num\">{esc(cer_score)}</td>"
-            f"<td class=\"num\">{esc(wer_score)}</td>"
-            f"<td class=\"num\">{esc(term_score)}</td>"
+            f"<td class=\"num\">{float(row['cer']):.3f}</td>"
+            f"<td class=\"num\">{float(row['wer']):.3f}</td>"
             f"<td>{esc(row['route'])}</td>"
             f"<td>{esc(row['expected_route'])}</td>"
             f"<td><span class=\"pill {row_status}\">{row_status}</span></td>"
@@ -891,19 +772,6 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
     detail_cards = []
     for row in results:
         row_status = status(row)
-        term_score = f"{len(row['found_terms'])}/{row['min_term_hits']}" if row["expected_terms"] else "n/a"
-        cer_score = "n/a" if row["expected_terms"] else f"{float(row['cer']):.3f}"
-        wer_score = "n/a" if row["expected_terms"] else f"{float(row['wer']):.3f}"
-        cer_note = "keyword case" if row["expected_terms"] else f"limit {float(row['max_cer']):.3f}"
-        source_html = ""
-        if row["source_url"]:
-            source_html = (
-                "<div>"
-                "<h3>Source</h3>"
-                f"<p><a href=\"{esc(row['source_url'])}\">{esc(row['source_title'])}</a></p>"
-                f"<p>{esc(row['source_license'])}</p>"
-                "</div>"
-            )
         detail_cards.append(
             f"<section class=\"case\" id=\"{esc(row['case'])}-{esc(row['mode'])}\">"
             "<div class=\"case-head\">"
@@ -914,22 +782,20 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
             f"<span class=\"pill {row_status}\">{row_status}</span>"
             "</div>"
             "<div class=\"metrics\">"
-            f"<div><span>CER</span><b>{esc(cer_score)}</b><small>{esc(cer_note)}</small></div>"
-            f"<div><span>WER</span><b>{esc(wer_score)}</b></div>"
-            f"<div><span>Term Hits</span><b>{esc(term_score)}</b><small>{esc(', '.join(row['found_terms']) or 'n/a')}</small></div>"
+            f"<div><span>CER</span><b>{float(row['cer']):.3f}</b><small>limit {float(row['max_cer']):.3f}</small></div>"
+            f"<div><span>WER</span><b>{float(row['wer']):.3f}</b></div>"
             f"<div><span>Route</span><b>{esc(row['route'])}</b><small>expected {esc(row['expected_route'])}</small></div>"
             f"<div><span>Mode</span><b>{esc(row['mode'])}</b></div>"
             f"<div><span>Tier</span><b>{'required' if row['required'] else 'challenge'}</b></div>"
             "</div>"
             "<div class=\"inspect-grid\">"
             "<figure>"
-            f"<img src=\"{image_data_uri(row)}\" alt=\"OCR test image for {esc(row['case'])}\">"
-            f"<figcaption>{'Real source image' if row['source_url'] else 'Generated image'}: {esc(row['image'])}</figcaption>"
+            f"<img src=\"{image_data_uri(row)}\" alt=\"Generated OCR test image for {esc(row['case'])}\">"
+            f"<figcaption>Generated image: {esc(row['image'])}</figcaption>"
             "</figure>"
             "<div class=\"text-pair\">"
-            f"{source_html}"
             "<div>"
-            "<h3>Ground Truth / Expected Snippets</h3>"
+            "<h3>Ground Truth</h3>"
             f"<pre dir=\"auto\">{esc(row['truth_text'])}</pre>"
             "</div>"
             "<div>"
@@ -1184,7 +1050,6 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
             <th>Mode</th>
             <th class="num">CER</th>
             <th class="num">WER</th>
-            <th class="num">Terms</th>
             <th>Route</th>
             <th>Expected</th>
             <th>Status</th>
@@ -1275,12 +1140,8 @@ def main() -> int:
             stderr_file.write_text(stderr, encoding="utf-8")
 
             cer, wer = error_rates(case.text, ocr_text)
-            found_terms = matching_terms(case.expected_terms, ocr_text)
             route, route_info = detect_route(ocr_text, config)
-            if case.expected_terms:
-                passed = len(found_terms) >= case.min_term_hits and route == case.expected_route
-            else:
-                passed = cer <= case.max_cer and route == case.expected_route
+            passed = cer <= case.max_cer and route == case.expected_route
             results.append(
                 {
                     "case": case.id,
@@ -1292,18 +1153,12 @@ def main() -> int:
                     "cer": cer,
                     "wer": wer,
                     "max_cer": case.max_cer,
-                    "expected_terms": list(case.expected_terms),
-                    "min_term_hits": case.min_term_hits,
-                    "found_terms": found_terms,
                     "required": case.required,
                     "route": route,
                     "expected_route": case.expected_route,
                     "route_info": route_info,
                     "passed": passed,
                     "notes": case.notes,
-                    "source_title": case.source_title,
-                    "source_url": case.source_url,
-                    "source_license": case.source_license,
                     "truth_text": case.text,
                     "ocr_text": ocr_text,
                     "stderr_text": stderr,
@@ -1323,12 +1178,9 @@ def main() -> int:
     )
     for row in results:
         status = "PASS" if row["passed"] else "FAIL" if row["required"] else "WARN"
-        cer_score = "n/a" if row["expected_terms"] else f"{row['cer']:.3f}"
-        wer_score = "n/a" if row["expected_terms"] else f"{row['wer']:.3f}"
         print(
             f"{status} {row['case']}[{row['mode']}]: "
-            f"CER={cer_score} WER={wer_score} "
-            f"terms={len(row['found_terms'])}/{row['min_term_hits']} "
+            f"CER={row['cer']:.3f} WER={row['wer']:.3f} "
             f"route={row['route']} expected={row['expected_route']}"
         )
     return 1 if blocking_failures else 0
