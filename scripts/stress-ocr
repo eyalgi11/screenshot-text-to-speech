@@ -38,7 +38,11 @@ BIDI_MARKS = {
 }
 
 OVERLAY_EFFECTS = {
+    "barcode_blocks",
+    "chart_distractors",
     "edge_badges",
+    "graphic_card_shapes",
+    "icon_doodles",
     "thin_rules",
     "ui_symbol_distractors",
     "math_symbol_distractors",
@@ -210,6 +214,64 @@ CASES: tuple[Case, ...] = (
         notes="Web-card style case with nearby controls and ambiguous code characters.",
     ),
     Case(
+        id="graphic_receipt_barcode",
+        text=(
+            "Pickup receipt 731-08\n"
+            "Bagel box      $12.60\n"
+            "Tax             $0.88\n"
+            "TOTAL          $13.48"
+        ),
+        expected_route="default",
+        max_cer=0.26,
+        must_include=("Pickup receipt 731-08", "Bagel box", "$12.60", "TOTAL", "$13.48"),
+        max_word_ratio=1.30,
+        required=False,
+        font_size=22,
+        width=900,
+        fill="#252525",
+        background="#fbf8ef",
+        effects=("barcode_blocks", "thin_rules", "paper_texture"),
+        notes="Receipt-like text beside generated barcode/QR graphics that should not become speech.",
+    ),
+    Case(
+        id="dashboard_graphics_overlay",
+        text=(
+            "Status report: backup completed\n"
+            "Files copied: 18,240 of 18,240\n"
+            "Next run: 02:30 tonight"
+        ),
+        expected_route="default",
+        max_cer=0.30,
+        must_include=("backup completed", "18,240", "02:30"),
+        max_word_ratio=1.35,
+        required=False,
+        font_size=22,
+        width=1120,
+        fill="#1e2934",
+        background="#f4f7f8",
+        effects=("chart_distractors", "graphic_card_shapes"),
+        notes="Dashboard text mixed with chart bars, graph lines, and card graphics.",
+    ),
+    Case(
+        id="message_with_avatar_graphics",
+        text=(
+            "Maya: train delayed by 14 minutes\n"
+            "Meet at platform 3 after 18:05.\n"
+            "Do not read the avatar or map graphics."
+        ),
+        expected_route="default",
+        max_cer=0.32,
+        must_include=("train delayed by 14 minutes", "platform 3", "18:05"),
+        max_word_ratio=1.35,
+        required=False,
+        font_size=22,
+        width=1120,
+        fill="#202124",
+        background="#f7f8fb",
+        effects=("graphic_card_shapes", "icon_doodles", "thin_rules"),
+        notes="Chat/card style text with avatar circles, map-like paths, and icon graphics.",
+    ),
+    Case(
         id="hebrew_clean_paragraph",
         text=(
             "כן. אושילנד כפר סבא פתוחה בשבת.\n"
@@ -277,6 +339,25 @@ CASES: tuple[Case, ...] = (
         background="#f2eee0",
         effects=("edge_badges", "watermark_symbols", "paper_texture", "camera_warp", "jpeg_artifacts"),
         notes="Hebrew notice on generated photo-like paper with watermark symbols and ambiguous digits.",
+    ),
+    Case(
+        id="hebrew_graphic_ticket",
+        text=(
+            "כרטיס נסיעה אושר בהצלחה.\n"
+            "קו 17 יוצא בשעה 08:45.\n"
+            "אין להקריא את האיורים ברקע."
+        ),
+        expected_route="hebrew",
+        max_cer=0.34,
+        must_include=("כרטיס נסיעה אושר בהצלחה", "קו 17", "08:45"),
+        max_word_ratio=1.35,
+        required=False,
+        font_size=22,
+        width=1080,
+        fill="#232323",
+        background="#fbfaf6",
+        effects=("barcode_blocks", "icon_doodles", "graphic_card_shapes", "paper_texture"),
+        notes="Hebrew ticket text surrounded by barcode, route-card, and illustration-like graphics.",
     ),
     Case(
         id="mixed_hebrew_ui",
@@ -513,6 +594,117 @@ def apply_overlay_effect(case: Case, path: Path, effect: str) -> None:
             x2 = min(width - 8, x1 + rng.randint(60, 180))
             y2 = min(height - 8, y1 + rng.randint(22, 58))
             args.extend(["-draw", f"rectangle {x1},{y1} {x2},{y2}"])
+
+    elif effect == "barcode_blocks":
+        anchor_left = case.expected_route == "hebrew"
+        x1 = 18 if anchor_left else max(18, width - 190)
+        y1 = rng.randint(16, max(18, min(height - 72, height // 2)))
+        args.extend(["-fill", "#f9f9f4", "-stroke", "#d7d7cf", "-strokewidth", "1"])
+        args.extend(["-draw", f"rectangle {x1},{y1} {x1 + 142},{y1 + 52}"])
+        args.extend(["-fill", "#2d3133", "-stroke", "none"])
+        x = x1 + 8
+        while x < x1 + 132:
+            line_width = rng.randint(1, 4)
+            gap = rng.randint(2, 6)
+            args.extend(["-draw", f"rectangle {x},{y1 + 7} {x + line_width},{y1 + 45}"])
+            x += line_width + gap
+
+        qr_size = 72
+        qr_x = 18 if anchor_left else max(18, width - qr_size - 24)
+        qr_y = rng.randint(max(18, height - qr_size - 28), max(20, height - qr_size - 10))
+        cell = 6
+        args.extend(["-fill", "#fbfbf8", "-stroke", "#d7d7cf", "-strokewidth", "1"])
+        args.extend(["-draw", f"rectangle {qr_x},{qr_y} {qr_x + qr_size},{qr_y + qr_size}"])
+        args.extend(["-fill", "#323638", "-stroke", "none"])
+        for row in range(10):
+            for col in range(10):
+                in_corner = (row < 3 and col < 3) or (row < 3 and col > 6) or (row > 6 and col < 3)
+                if in_corner or rng.random() < 0.36:
+                    bx = qr_x + 6 + col * cell
+                    by = qr_y + 6 + row * cell
+                    args.extend(["-draw", f"rectangle {bx},{by} {bx + 4},{by + 4}"])
+
+    elif effect == "chart_distractors":
+        chart_x = max(20, width - 330)
+        chart_y = rng.randint(14, max(16, min(height - 118, height // 2)))
+        chart_w = min(290, max(120, width - chart_x - 16))
+        chart_h = min(110, max(60, height - chart_y - 16))
+        args.extend(["-fill", "#edf4f2", "-stroke", "#c6d4d1", "-strokewidth", "1"])
+        args.extend(["-draw", f"roundrectangle {chart_x},{chart_y} {chart_x + chart_w},{chart_y + chart_h} 8,8"])
+        args.extend(["-stroke", "#d4dedb", "-strokewidth", "1", "-fill", "none"])
+        for i in range(1, 4):
+            y = chart_y + i * chart_h // 4
+            args.extend(["-draw", f"line {chart_x + 10},{y} {chart_x + chart_w - 10},{y}"])
+        bar_w = max(9, chart_w // 12)
+        args.extend(["-fill", "#94b7c2", "-stroke", "none"])
+        for i in range(6):
+            bx = chart_x + 18 + i * (bar_w + 8)
+            bh = rng.randint(chart_h // 5, max(chart_h // 5 + 1, chart_h - 28))
+            args.extend(["-draw", f"rectangle {bx},{chart_y + chart_h - 12 - bh} {bx + bar_w},{chart_y + chart_h - 12}"])
+        points = []
+        for i in range(6):
+            px = chart_x + 18 + i * max(18, (chart_w - 40) // 5)
+            py = chart_y + 16 + rng.randint(0, max(1, chart_h - 40))
+            points.append((px, py))
+        args.extend(["-stroke", "#d48f75", "-strokewidth", "3", "-fill", "none"])
+        for (x_a, y_a), (x_b, y_b) in zip(points, points[1:]):
+            args.extend(["-draw", f"line {x_a},{y_a} {x_b},{y_b}"])
+        args.extend(["-fill", "#d48f75", "-stroke", "none"])
+        for px, py in points:
+            args.extend(["-draw", f"circle {px},{py} {px + 3},{py}"])
+
+    elif effect == "graphic_card_shapes":
+        anchor_left = case.expected_route == "hebrew"
+        for _ in range(3):
+            card_w = rng.randint(72, 126)
+            card_h = rng.randint(42, 76)
+            if anchor_left:
+                x1 = rng.randint(8, min(90, max(8, width - card_w - 8)))
+            else:
+                x1 = rng.randint(max(8, width - card_w - 120), max(8, width - card_w - 8))
+            y1 = rng.randint(10, max(12, height - card_h - 8))
+            x2 = min(width - 8, x1 + card_w)
+            y2 = min(height - 8, y1 + card_h)
+            args.extend(["-fill", "#eef2f6", "-stroke", "#ccd4dc", "-strokewidth", "1"])
+            args.extend(["-draw", f"roundrectangle {x1},{y1} {x2},{y2} 9,9"])
+            args.extend(["-fill", "#cad8e6", "-stroke", "none"])
+            args.extend(["-draw", f"circle {x1 + 18},{y1 + 18} {x1 + 28},{y1 + 18}"])
+            args.extend(["-fill", "#aebfd0"])
+            args.extend(["-draw", f"polygon {x1 + 10},{y2 - 10} {x1 + 42},{y1 + 30} {x1 + 66},{y2 - 10}"])
+            args.extend(["-fill", "#d7e3bc"])
+            args.extend(["-draw", f"polygon {x1 + 44},{y2 - 10} {x1 + 84},{y1 + 26} {x2 - 10},{y2 - 10}"])
+
+    elif effect == "icon_doodles":
+        anchor_left = case.expected_route == "hebrew"
+        args.extend(["-stroke", "#a9b5bd", "-strokewidth", "3", "-fill", "none"])
+        for _ in range(3):
+            if anchor_left:
+                x = rng.randint(24, min(110, max(24, width - 46)))
+            else:
+                x = rng.randint(max(24, width - 150), max(24, width - 46))
+            y = rng.randint(24, max(28, height - 44))
+            args.extend(["-draw", f"circle {x},{y} {x + 16},{y}"])
+            args.extend(["-draw", f"line {x - 12},{y + 20} {x + 12},{y + 20}"])
+        if anchor_left:
+            x = rng.randint(18, min(120, max(18, width - 70)))
+        else:
+            x = rng.randint(max(18, width - 190), max(18, width - 70))
+        y = rng.choice([rng.randint(18, 42), rng.randint(max(22, height - 54), max(24, height - 22))])
+        args.extend(["-stroke", "#c9a96b", "-strokewidth", "3", "-fill", "none"])
+        args.extend(["-draw", f"polygon {x},{y + 34} {x + 24},{y} {x + 48},{y + 34}"])
+        args.extend(["-draw", f"line {x + 24},{y + 10} {x + 24},{y + 23}"])
+        args.extend(["-draw", f"circle {x + 24},{y + 29} {x + 26},{y + 29}"])
+        path_points = []
+        if anchor_left:
+            start_x = rng.randint(24, min(130, max(24, width - 260)))
+        else:
+            start_x = rng.randint(max(24, width - 260), max(26, width - 190))
+        base_y = rng.randint(max(24, height - 74), max(26, height - 34))
+        for i in range(5):
+            path_points.append((start_x + i * rng.randint(34, 54), base_y + rng.randint(-18, 18)))
+        args.extend(["-stroke", "#9db7a2", "-strokewidth", "4", "-fill", "none"])
+        for (x_a, y_a), (x_b, y_b) in zip(path_points, path_points[1:]):
+            args.extend(["-draw", f"line {x_a},{y_a} {x_b},{y_b}"])
 
     elif effect == "edge_badges":
         tokens = ["OK", "?", "x", "!", "::", "copy", "tap", "ID", "#", "⋯"]
