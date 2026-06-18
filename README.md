@@ -249,6 +249,12 @@ marks, chart/card/barcode graphics, decorative symbols, or meaning-changing
 text as speech text, while the command only exits nonzero for required-case
 failures.
 
+The HTML report includes a sticky order control. Use it to view cases by
+oldest/newest insertion order or by difficulty. The `difficulty_ladder_*`
+challenge cases are generated in increasing difficulty from clean text through
+low contrast, dense UI clutter, photo shadows, glare, and a severe Hebrew
+notice.
+
 The checker does not download OmniVoice model weights. The first real OmniVoice
 generation may download the model from Hugging Face into the normal cache.
 BlueTTS model files are downloaded by `scripts/setup-hebrew-blue`.

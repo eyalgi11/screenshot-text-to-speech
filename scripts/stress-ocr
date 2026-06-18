@@ -39,10 +39,15 @@ BIDI_MARKS = {
 
 OVERLAY_EFFECTS = {
     "barcode_blocks",
+    "background_microtext",
     "chart_distractors",
     "edge_badges",
+    "glare_streaks",
     "graphic_card_shapes",
     "icon_doodles",
+    "moire_lines",
+    "partial_occlusion",
+    "shadow_bands",
     "thin_rules",
     "ui_symbol_distractors",
     "math_symbol_distractors",
@@ -62,6 +67,7 @@ class Case:
     text: str
     expected_route: str
     max_cer: float
+    difficulty: int = 1
     must_include: tuple[str, ...] = ()
     must_not_include: tuple[str, ...] = ()
     max_word_ratio: float = 0.0
@@ -387,6 +393,136 @@ CASES: tuple[Case, ...] = (
         effects=("rotate_1",),
         notes="Slightly skewed receipt-style text with columns.",
     ),
+    Case(
+        id="difficulty_ladder_01_plain_notice",
+        text=(
+            "Library notice: room B opens at 09:15.\n"
+            "Bring photo ID and the blue access card.\n"
+            "Reference code: EASY-104."
+        ),
+        expected_route="default",
+        max_cer=0.12,
+        difficulty=1,
+        must_include=("Library notice", "09:15", "EASY-104"),
+        max_word_ratio=1.20,
+        required=False,
+        font_size=24,
+        width=980,
+        notes="Difficulty 1 ladder case: clean text with ordinary punctuation and numbers.",
+    ),
+    Case(
+        id="difficulty_ladder_02_faint_mobile_card",
+        text=(
+            "Delivery update: driver is nearby.\n"
+            "Gate code 408-7 expires after 12 minutes.\n"
+            "Ignore icons outside the message."
+        ),
+        expected_route="default",
+        max_cer=0.22,
+        difficulty=2,
+        must_include=("Delivery update", "408-7", "12 minutes"),
+        max_word_ratio=1.25,
+        required=False,
+        font_size=20,
+        width=960,
+        fill="#5f666c",
+        background="#f1f3ef",
+        effects=("resize_90", "blur", "thin_rules"),
+        notes="Difficulty 2 ladder case: smaller low-contrast mobile-card text with mild rule-line clutter.",
+    ),
+    Case(
+        id="difficulty_ladder_03_dense_ui_noise",
+        text=(
+            "System alert: storage pool is degraded.\n"
+            "Replace disk bay 04 before Friday 18:00.\n"
+            "Read only the alert body."
+        ),
+        expected_route="default",
+        max_cer=0.36,
+        difficulty=3,
+        must_include=("System alert", "disk bay 04", "Friday 18:00"),
+        must_not_include=("sync", "copy", "menu"),
+        max_word_ratio=1.35,
+        required=False,
+        font_size=21,
+        width=1100,
+        fill="#22282d",
+        background="#f7f8f4",
+        effects=("background_microtext", "ui_symbol_distractors", "thin_rules", "resize_90"),
+        notes="Difficulty 3 ladder case: dense UI clutter and microtext around the real message.",
+    ),
+    Case(
+        id="difficulty_ladder_04_photo_shadow_receipt",
+        text=(
+            "Market receipt 8821\n"
+            "Olive bread       16.90\n"
+            "Tomato pack        9.40\n"
+            "TOTAL             26.30"
+        ),
+        expected_route="default",
+        max_cer=0.46,
+        difficulty=4,
+        must_include=("Market receipt 8821", "Olive bread", "TOTAL", "26.30"),
+        max_word_ratio=1.30,
+        required=False,
+        font_size=22,
+        width=850,
+        fill="#2b2924",
+        background="#f5efd8",
+        effects=("thin_rules", "paper_texture", "shadow_bands", "camera_warp", "jpeg_artifacts"),
+        notes="Difficulty 4 ladder case: receipt text with paper texture, perspective, shadows, and compression.",
+    ),
+    Case(
+        id="difficulty_ladder_05_glare_dashboard",
+        text=(
+            "Incident panel: network unstable\n"
+            "Packet loss peaked at 7.8% near 23:10.\n"
+            "Escalate only if it repeats."
+        ),
+        expected_route="default",
+        max_cer=0.52,
+        difficulty=5,
+        must_include=("Incident panel", "7.8%", "23:10"),
+        must_not_include=("sync", "copy", "menu"),
+        max_word_ratio=1.45,
+        required=False,
+        font_size=22,
+        width=1120,
+        fill="#17212b",
+        background="#eef3f4",
+        effects=("chart_distractors", "graphic_card_shapes", "background_microtext", "glare_streaks", "jpeg_artifacts"),
+        notes="Difficulty 5 ladder case: dashboard text with glare, graphics, and nearby non-message microtext.",
+    ),
+    Case(
+        id="difficulty_ladder_06_hebrew_extreme_notice",
+        text=(
+            "התראה חשובה: החבילה ממתינה לאיסוף.\n"
+            "קוד איסוף 72-ב תקף עד 19:30.\n"
+            "אין להקריא סמלים או טקסט רקע."
+        ),
+        expected_route="hebrew",
+        max_cer=0.56,
+        difficulty=6,
+        must_include=("התראה חשובה", "קוד איסוף", "19:30"),
+        must_not_include=("copy", "menu", "sync"),
+        max_word_ratio=1.45,
+        required=False,
+        font_size=22,
+        width=1120,
+        fill="#222222",
+        background="#f4efe1",
+        effects=(
+            "background_microtext",
+            "watermark_symbols",
+            "moire_lines",
+            "shadow_bands",
+            "partial_occlusion",
+            "paper_texture",
+            "camera_warp",
+            "jpeg_artifacts",
+        ),
+        notes="Difficulty 6 ladder case: Hebrew notice with microtext, moire, shadows, partial occlusion, perspective, and compression.",
+    ),
 )
 
 
@@ -706,6 +842,77 @@ def apply_overlay_effect(case: Case, path: Path, effect: str) -> None:
         for (x_a, y_a), (x_b, y_b) in zip(path_points, path_points[1:]):
             args.extend(["-draw", f"line {x_a},{y_a} {x_b},{y_b}"])
 
+    elif effect == "background_microtext":
+        tokens = (
+            ["sync", "copy", "menu", "tap", "tag", "99", "v2", "id"]
+            if case.expected_route != "hebrew"
+            else ["sync", "copy", "menu", "72", "id", "tag", "tap"]
+        )
+        args.extend(["-font", "DejaVu-Sans", "-fill", "#a4aaa5"])
+        for _ in range(18):
+            token = rng.choice(tokens)
+            size = rng.randint(9, 15)
+            on_edge = rng.random() < 0.7
+            if on_edge:
+                x = rng.choice([rng.randint(8, 120), rng.randint(max(12, width - 160), max(14, width - 50))])
+                y = rng.randint(16, max(20, height - 14))
+            else:
+                x = rng.randint(20, max(22, width - 120))
+                y = rng.choice([rng.randint(16, 36), rng.randint(max(20, height - 38), max(22, height - 12))])
+            args.extend(["-pointsize", str(size), "-draw", draw_text_command(x, y, token)])
+
+    elif effect == "glare_streaks":
+        args.extend(["-stroke", "none", "-fill", "#ffffff88"])
+        for _ in range(2):
+            y = rng.randint(20, max(24, height // 2))
+            x_offset = rng.randint(-80, 80)
+            args.extend(
+                [
+                    "-draw",
+                    (
+                        f"polygon {x_offset},{y} {width + x_offset},{max(0, y - 26)} "
+                        f"{width + x_offset},{min(height, y + 10)} {x_offset},{min(height, y + 42)}"
+                    ),
+                ]
+            )
+        args.extend(["-fill", "#ffffff44"])
+        args.extend(["-draw", f"ellipse {width // 2},{height // 3} {max(60, width // 5)},{max(26, height // 8)} 0,360"])
+
+    elif effect == "shadow_bands":
+        args.extend(["-stroke", "none", "-fill", "#00000028"])
+        for _ in range(2):
+            y = rng.randint(max(12, height // 5), max(14, height - 40))
+            args.extend(
+                [
+                    "-draw",
+                    (
+                        f"polygon 0,{y} {width},{max(0, y - rng.randint(18, 36))} "
+                        f"{width},{min(height, y + rng.randint(20, 42))} 0,{min(height, y + rng.randint(40, 64))}"
+                    ),
+                ]
+            )
+        args.extend(["-fill", "#00000014"])
+        args.extend(["-draw", f"rectangle 0,0 {width},{max(12, height // 9)}"])
+
+    elif effect == "moire_lines":
+        args.extend(["-stroke", "#5d687122", "-strokewidth", "1", "-fill", "none"])
+        spacing = rng.randint(8, 12)
+        for x in range(-height, width + height, spacing):
+            args.extend(["-draw", f"line {x},0 {x + height},{height}"])
+        args.extend(["-stroke", "#ffffff28"])
+        for y in range(0, height, spacing + 5):
+            args.extend(["-draw", f"line 0,{y} {width},{min(height, y + rng.randint(1, 3))}"])
+
+    elif effect == "partial_occlusion":
+        anchor_left = case.expected_route == "hebrew"
+        args.extend(["-stroke", "#d8ceb3", "-strokewidth", "1", "-fill", "#f4e7b466"])
+        for _ in range(2):
+            x1 = rng.randint(20, max(24, width // 4)) if not anchor_left else rng.randint(max(20, width - width // 3), max(24, width - 120))
+            y1 = rng.randint(max(24, height // 4), max(28, height - 60))
+            x2 = min(width - 18, x1 + rng.randint(110, 220))
+            y2 = min(height - 14, y1 + rng.randint(24, 42))
+            args.extend(["-draw", f"roundrectangle {x1},{y1} {x2},{y2} 7,7"])
+
     elif effect == "edge_badges":
         tokens = ["OK", "?", "x", "!", "::", "copy", "tap", "ID", "#", "⋯"]
         args.extend(["-font", "DejaVu-Sans", "-fill", "#9aa19a"])
@@ -940,15 +1147,16 @@ def write_markdown_report(results: list[dict[str, object]], out_dir: Path, lang:
         f"- Blocking failures: {len(blocking_failures)}",
         f"- Challenge failures: {len(challenge_failures)}",
         "",
-        "| Order | Case | Tier | Mode | CER | WER | Route | Expected Route | Result | Notes |",
-        "| ---: | --- | --- | --- | ---: | ---: | --- | --- | --- | --- |",
+        "| Order | Difficulty | Case | Tier | Mode | CER | WER | Route | Expected Route | Result | Notes |",
+        "| ---: | ---: | --- | --- | --- | ---: | ---: | --- | --- | --- | --- |",
     ]
     for row in results:
         tier = "required" if row["required"] else "challenge"
         result = "pass" if row["passed"] else "FAIL" if row["required"] else "CHALLENGE_FAIL"
         lines.append(
-            "| {case_order} | {case} | {tier} | {mode} | {cer:.3f} | {wer:.3f} | {route} | {expected_route} | {result} | {notes} |".format(
+            "| {case_order} | {difficulty} | {case} | {tier} | {mode} | {cer:.3f} | {wer:.3f} | {route} | {expected_route} | {result} | {notes} |".format(
                 case_order=row["case_order"],
+                difficulty=row["difficulty"],
                 case=row["case"],
                 tier=tier,
                 mode=row["mode"],
@@ -1016,8 +1224,9 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
         row_status = status_class(row)
         row_label = status_label(row)
         summary_rows.append(
-            f"<tr data-case-order=\"{esc(row['case_order'])}\" data-run-order=\"{esc(row['run_order'])}\">"
+            f"<tr data-case-order=\"{esc(row['case_order'])}\" data-run-order=\"{esc(row['run_order'])}\" data-difficulty=\"{esc(row['difficulty'])}\">"
             f"<td class=\"num\">{int(row['case_order'])}</td>"
+            f"<td class=\"num\">{int(row['difficulty'])}</td>"
             f"<td><a href=\"#{esc(row['case'])}-{esc(row['mode'])}\">{esc(row['case'])}</a></td>"
             f"<td>{'required' if row['required'] else 'challenge'}</td>"
             f"<td>{esc(row['mode'])}</td>"
@@ -1035,7 +1244,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
         row_label = status_label(row)
         checks_text = "\n".join(str(check) for check in row["checks"])
         detail_cards.append(
-            f"<section class=\"case\" id=\"{esc(row['case'])}-{esc(row['mode'])}\" data-case-order=\"{esc(row['case_order'])}\" data-run-order=\"{esc(row['run_order'])}\">"
+            f"<section class=\"case\" id=\"{esc(row['case'])}-{esc(row['mode'])}\" data-case-order=\"{esc(row['case_order'])}\" data-run-order=\"{esc(row['run_order'])}\" data-difficulty=\"{esc(row['difficulty'])}\">"
             "<div class=\"case-head\">"
             "<div>"
             f"<h2>{esc(row['case'])}</h2>"
@@ -1051,6 +1260,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
             f"<div><span>Mode</span><b>{esc(row['mode'])}</b></div>"
             f"<div><span>Tier</span><b>{'required' if row['required'] else 'challenge'}</b></div>"
             f"<div><span>Order</span><b>{int(row['case_order'])}</b><small>oldest first</small></div>"
+            f"<div><span>Difficulty</span><b>{int(row['difficulty'])}</b><small>higher is harder</small></div>"
             "</div>"
             "<div class=\"inspect-grid\">"
             "<figure>"
@@ -1363,6 +1573,8 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       <div class="segmented" role="group" aria-label="Case order">
         <button class="order-button is-active" type="button" data-order="oldest" aria-pressed="true">Oldest to newest</button>
         <button class="order-button" type="button" data-order="newest" aria-pressed="false">Newest to oldest</button>
+        <button class="order-button" type="button" data-order="difficulty-asc" aria-pressed="false">Easy to hard</button>
+        <button class="order-button" type="button" data-order="difficulty-desc" aria-pressed="false">Hard to easy</button>
       </div>
     </section>
     <section class="table-wrap" aria-label="Result table">
@@ -1370,6 +1582,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
         <thead>
           <tr>
             <th class="num">Order</th>
+            <th class="num">Difficulty</th>
             <th>Case</th>
             <th>Tier</th>
             <th>Mode</th>
@@ -1399,6 +1612,14 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       const compareByOrder = (direction) => (left, right) => {{
         const leftCase = Number(left.dataset.caseOrder);
         const rightCase = Number(right.dataset.caseOrder);
+        const leftDifficulty = Number(left.dataset.difficulty);
+        const rightDifficulty = Number(right.dataset.difficulty);
+        if (direction === "difficulty-asc" && leftDifficulty !== rightDifficulty) {{
+          return leftDifficulty - rightDifficulty;
+        }}
+        if (direction === "difficulty-desc" && leftDifficulty !== rightDifficulty) {{
+          return rightDifficulty - leftDifficulty;
+        }}
         if (leftCase !== rightCase) {{
           return direction === "newest" ? rightCase - leftCase : leftCase - rightCase;
         }}
@@ -1515,6 +1736,7 @@ def main() -> int:
                 {
                     "case_order": case_orders[case.id],
                     "run_order": len(results) + 1,
+                    "difficulty": case.difficulty,
                     "case": case.id,
                     "mode": mode,
                     "image": str(ocr_input.relative_to(out_dir)),
