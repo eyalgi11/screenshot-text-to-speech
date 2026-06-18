@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+"""Compare OCR variants on hard stress cases before changing engines."""
+
+from __future__ import annotations
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_OUT_DIR = PROJECT_DIR / "tmp" / "ocr-bakeoff" / "latest"
+DEFAULT_SOURCE_REPORT = PROJECT_DIR / "tmp" / "ocr-stress" / "latest" / "results.json"
+
+
+def load_stress_module() -> ModuleType:
+    path = PROJECT_DIR / "scripts" / "stress-ocr"
+    loader = importlib.machinery.SourceFileLoader("stress_ocr", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        raise RuntimeError(f"Could not load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
+
+
+stress = load_stress_module()
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="Run generated OCR stress images through multiple Tesseract/preprocess variants"
+    )
+    p.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="Artifact directory")
+    p.add_argument(
+        "--cases",
+        default="failing",
+        help="failing, challenge, required, all, or comma-separated case ids",
+    )
+    p.add_argument("--source-report", default=str(DEFAULT_SOURCE_REPORT), help="Stress results used by --cases failing")
+    p.add_argument("--lang", help="Tesseract language, default from config or installed languages")
+    p.add_argument("--psms", help="Comma-separated Tesseract page segmentation modes")
+    p.add_argument(
+        "--variants",
+        default="raw,current,contrast,screen,threshold,dark",
+        help="Comma-separated preprocess variants",
+    )
+    p.add_argument("--no-clean", action="store_true", help="Keep existing output directory contents")
+    return p
+
+
+def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+def require_commands() -> None:
+    for command in ("magick", "tesseract"):
+        if not shutil.which(command):
+            raise SystemExit(f"Missing command: {command}")
+
+
+def split_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def default_psms(config: dict[str, str]) -> list[str]:
+    configured = config.get("STTS_OCR_PSM", "6")
+    return unique([configured, "6", "4", "11", "12"])
+
+
+def cases_from_latest_failures(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    failed_cases: list[str] = []
+    for row in rows:
+        if row.get("passed") or row.get("required"):
+            continue
+        case_id = str(row.get("case", "")).strip()
+        if case_id:
+            failed_cases.append(case_id)
+    return unique(failed_cases)
+
+
+def select_cases(selector: str, source_report: Path) -> list[Any]:
+    all_cases = list(stress.CASES)
+    by_id = {case.id: case for case in all_cases}
+    selector = selector.strip()
+
+    if selector == "all":
+        return all_cases
+    if selector == "required":
+        return [case for case in all_cases if case.required]
+    if selector == "challenge":
+        return [case for case in all_cases if not case.required]
+    if selector == "failing":
+        failed = cases_from_latest_failures(source_report)
+        if not failed:
+            return [case for case in all_cases if not case.required]
+        return [by_id[case_id] for case_id in failed if case_id in by_id]
+
+    wanted = split_csv(selector)
+    missing = [case_id for case_id in wanted if case_id not in by_id]
+    if missing:
+        raise SystemExit(f"Unknown case(s): {', '.join(missing)}")
+    return [by_id[case_id] for case_id in wanted]
+
+
+def preprocess_variant(input_path: Path, output_path: Path, variant: str) -> None:
+    if variant == "raw":
+        return
+
+    if variant == "current":
+        stress.preprocess_image(input_path, output_path)
+        return
+
+    recipes = {
+        "contrast": [
+            "-colorspace",
+            "Gray",
+            "-resize",
+            "250%",
+            "-contrast-stretch",
+            "1%x1%",
+            "-sigmoidal-contrast",
+            "10x45%",
+            "-sharpen",
+            "0x1.1",
+        ],
+        "screen": [
+            "-colorspace",
+            "Gray",
+            "-resize",
+            "300%",
+            "-auto-level",
+            "-unsharp",
+            "0x1.2+0.8+0.02",
+        ],
+        "threshold": [
+            "-colorspace",
+            "Gray",
+            "-resize",
+            "250%",
+            "-auto-level",
+            "-threshold",
+            "58%",
+            "-sharpen",
+            "0x0.5",
+        ],
+        "dark": [
+            "-colorspace",
+            "Gray",
+            "-resize",
+            "250%",
+            "-negate",
+            "-auto-level",
+            "-negate",
+            "-sigmoidal-contrast",
+            "12x40%",
+            "-sharpen",
+            "0x1.0",
+        ],
+    }
+    if variant not in recipes:
+        raise SystemExit(f"Unknown variant: {variant}")
+
+    proc = run(["magick", str(input_path), *recipes[variant], str(output_path)])
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"Preprocess variant failed: {variant}")
+
+
+def failed_check_count(checks: list[str]) -> int:
+    return sum(1 for check in checks if check.startswith("FAIL"))
+
+
+def score(row: dict[str, Any]) -> tuple[int, int, float, float, float]:
+    return (
+        0 if row["passed"] else 1,
+        int(row["failed_checks"]),
+        float(row["cer"]),
+        float(row["wer"]),
+        abs(1.0 - float(row["word_ratio"])),
+    )
+
+
+def row_excerpt(text: str, limit: int = 90) -> str:
+    line = " ".join(text.split())
+    if len(line) <= limit:
+        return line
+    return line[: limit - 3] + "..."
+
+
+def write_report(results: list[dict[str, Any]], out_dir: Path, lang: str, psms: list[str], variants: list[str]) -> None:
+    by_case: dict[str, list[dict[str, Any]]] = {}
+    for row in results:
+        by_case.setdefault(row["case"], []).append(row)
+
+    best_rows = [min(rows, key=score) for rows in by_case.values()]
+    improved = [row for row in best_rows if row["passed"]]
+    still_failed = [row for row in best_rows if not row["passed"]]
+
+    lines = [
+        "# OCR Bakeoff Report",
+        "",
+        f"- Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        f"- OCR language: `{lang}`",
+        f"- PSMs: `{', '.join(psms)}`",
+        f"- Variants: `{', '.join(variants)}`",
+        f"- Cases: {len(by_case)}",
+        f"- Passing with at least one candidate: {len(improved)}",
+        f"- Still failing after bakeoff: {len(still_failed)}",
+        "",
+        "## Best Candidate Per Case",
+        "",
+        "| Case | Best | Result | Failed Checks | CER | WER | Word Ratio | Excerpt |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for row in sorted(best_rows, key=lambda item: (item["case_order"], item["case"])):
+        result = "pass" if row["passed"] else "fail"
+        lines.append(
+            "| {case} | {variant}/psm{psm} | {result} | {failed_checks} | {cer:.3f} | {wer:.3f} | {word_ratio:.2f} | {excerpt} |".format(
+                case=row["case"],
+                variant=row["variant"],
+                psm=row["psm"],
+                result=result,
+                failed_checks=row["failed_checks"],
+                cer=row["cer"],
+                wer=row["wer"],
+                word_ratio=row["word_ratio"],
+                excerpt=row_excerpt(str(row["ocr_text"])).replace("|", "\\|"),
+            )
+        )
+
+    lines.extend(["", "## All Candidates", ""])
+    for case_id, rows in sorted(by_case.items(), key=lambda item: (item[1][0]["case_order"], item[0])):
+        lines.extend(["", f"### {case_id}", ""])
+        lines.append("| Candidate | Result | Failed Checks | CER | WER | Word Ratio | Checks |")
+        lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- |")
+        for row in sorted(rows, key=score):
+            result = "pass" if row["passed"] else "fail"
+            checks = "<br>".join(str(check).replace("|", "\\|") for check in row["checks"])
+            lines.append(
+                "| {variant}/psm{psm} | {result} | {failed_checks} | {cer:.3f} | {wer:.3f} | {word_ratio:.2f} | {checks} |".format(
+                    variant=row["variant"],
+                    psm=row["psm"],
+                    result=result,
+                    failed_checks=row["failed_checks"],
+                    cer=row["cer"],
+                    wer=row["wer"],
+                    word_ratio=row["word_ratio"],
+                    checks=checks,
+                )
+            )
+
+    (out_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (out_dir / "results.json").write_text(json.dumps(results, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    args = parser().parse_args()
+    require_commands()
+
+    config = stress.parse_env_file(PROJECT_DIR / "config" / "screenshot-tts.env")
+    lang = args.lang or stress.default_ocr_lang(config)
+    psms = split_csv(args.psms) if args.psms else default_psms(config)
+    variants = split_csv(args.variants)
+    if "raw" not in variants:
+        variants.insert(0, "raw")
+
+    out_dir = Path(args.out_dir).expanduser()
+    if out_dir.exists() and not args.no_clean:
+        shutil.rmtree(out_dir)
+    for child in ("images", "truth", "ocr"):
+        (out_dir / child).mkdir(parents=True, exist_ok=True)
+
+    selected_cases = select_cases(args.cases, Path(args.source_report).expanduser())
+    if not selected_cases:
+        raise SystemExit("No OCR bakeoff cases selected")
+
+    case_orders = {case.id: index + 1 for index, case in enumerate(stress.CASES)}
+    results: list[dict[str, Any]] = []
+
+    for case in selected_cases:
+        image = out_dir / "images" / f"{case.id}.png"
+        truth_file = out_dir / "truth" / f"{case.id}.txt"
+        stress.generate_image(case, image)
+        truth_file.write_text(case.text + "\n", encoding="utf-8")
+
+        variant_inputs: dict[str, Path] = {"raw": image}
+        for variant in variants:
+            if variant == "raw":
+                continue
+            variant_path = out_dir / "images" / f"{case.id}.{variant}.png"
+            preprocess_variant(image, variant_path, variant)
+            variant_inputs[variant] = variant_path
+
+        for variant in variants:
+            for psm in psms:
+                ocr_file = out_dir / "ocr" / f"{case.id}.{variant}.psm{psm}.txt"
+                stderr_file = out_dir / "ocr" / f"{case.id}.{variant}.psm{psm}.stderr.txt"
+                ocr_text, stderr = stress.ocr_image(variant_inputs[variant], lang, psm)
+                ocr_file.write_text(ocr_text, encoding="utf-8")
+                stderr_file.write_text(stderr, encoding="utf-8")
+
+                cer, wer = stress.error_rates(case.text, ocr_text)
+                route, route_info = stress.detect_route(ocr_text, config)
+                passed, checks, actual_word_ratio = stress.evaluate_case(case, ocr_text, cer, route)
+                results.append(
+                    {
+                        "case_order": case_orders[case.id],
+                        "run_order": len(results) + 1,
+                        "case": case.id,
+                        "difficulty": case.difficulty,
+                        "required": case.required,
+                        "variant": variant,
+                        "psm": psm,
+                        "image": str(variant_inputs[variant].relative_to(out_dir)),
+                        "truth_file": str(truth_file.relative_to(out_dir)),
+                        "ocr_file": str(ocr_file.relative_to(out_dir)),
+                        "stderr_file": str(stderr_file.relative_to(out_dir)),
+                        "cer": cer,
+                        "wer": wer,
+                        "word_ratio": actual_word_ratio,
+                        "failed_checks": failed_check_count(checks),
+                        "checks": checks,
+                        "route": route,
+                        "expected_route": case.expected_route,
+                        "route_info": route_info,
+                        "passed": passed,
+                        "truth_text": case.text,
+                        "ocr_text": ocr_text,
+                        "stderr_text": stderr,
+                    }
+                )
+
+    write_report(results, out_dir, lang, psms, variants)
+
+    by_case: dict[str, list[dict[str, Any]]] = {}
+    for row in results:
+        by_case.setdefault(row["case"], []).append(row)
+    best_rows = [min(rows, key=score) for rows in by_case.values()]
+    passing = [row for row in best_rows if row["passed"]]
+    failing = [row for row in best_rows if not row["passed"]]
+
+    print(f"OCR bakeoff artifacts: {out_dir}")
+    print(f"Report: {out_dir / 'report.md'}")
+    print(f"Cases: {len(best_rows)}  Passing with a candidate: {len(passing)}  Still failing: {len(failing)}")
+    for row in sorted(best_rows, key=lambda item: (item["case_order"], item["case"])):
+        status = "PASS" if row["passed"] else "FAIL"
+        print(
+            f"{status} {row['case']}: best={row['variant']}/psm{row['psm']} "
+            f"failed_checks={row['failed_checks']} CER={row['cer']:.3f} "
+            f"WER={row['wer']:.3f} ratio={row['word_ratio']:.2f}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

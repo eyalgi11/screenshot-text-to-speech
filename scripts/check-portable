@@ -26,7 +26,7 @@ for file in "${shell_files[@]}"; do
   bash -n "$file"
 done
 
-python3 -m py_compile bin/blue-hebrew-say bin/detect-text-language bin/ocr-image bin/omnivoice-say bin/pause-hotkey-daemon bin/wayland-pause-evdev-daemon scripts/stress-ocr
+python3 -m py_compile bin/blue-hebrew-say bin/detect-text-language bin/ocr-image bin/omnivoice-say bin/pause-hotkey-daemon bin/wayland-pause-evdev-daemon scripts/ocr-bakeoff scripts/stress-ocr
 python3 - <<'PY'
 import runpy
 

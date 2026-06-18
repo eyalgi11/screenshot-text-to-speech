@@ -237,10 +237,21 @@ OCR stress test with generated hard text images:
 scripts/stress-ocr
 ```
 
+Targeted OCR bakeoff for the current challenge failures:
+
+```sh
+scripts/ocr-bakeoff
+```
+
 The stress test writes images, OCR text, route decisions, `report.md`, and an
 inspectable self-contained `report.html` under `tmp/ocr-stress/latest`. Use
 `scripts/stress-ocr --mode all` to compare raw OCR, always-preprocessed OCR,
 and the app's automatic fallback.
+
+The bakeoff writes `tmp/ocr-bakeoff/latest/report.md` and compares several
+Tesseract page segmentation modes and preprocessing recipes on the failing
+challenge cases. Use it before deciding whether to tune preprocessing or add a
+second OCR backend for hard screenshots.
 
 Some generated images are required baseline cases; harder symbol-clutter,
 graphic-overlay, photo-like, dark-overlay, and web-card images are challenge
