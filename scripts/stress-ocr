@@ -940,14 +940,15 @@ def write_markdown_report(results: list[dict[str, object]], out_dir: Path, lang:
         f"- Blocking failures: {len(blocking_failures)}",
         f"- Challenge failures: {len(challenge_failures)}",
         "",
-        "| Case | Tier | Mode | CER | WER | Route | Expected Route | Result | Notes |",
-        "| --- | --- | --- | ---: | ---: | --- | --- | --- | --- |",
+        "| Order | Case | Tier | Mode | CER | WER | Route | Expected Route | Result | Notes |",
+        "| ---: | --- | --- | --- | ---: | ---: | --- | --- | --- | --- |",
     ]
     for row in results:
         tier = "required" if row["required"] else "challenge"
         result = "pass" if row["passed"] else "FAIL" if row["required"] else "CHALLENGE_FAIL"
         lines.append(
-            "| {case} | {tier} | {mode} | {cer:.3f} | {wer:.3f} | {route} | {expected_route} | {result} | {notes} |".format(
+            "| {case_order} | {case} | {tier} | {mode} | {cer:.3f} | {wer:.3f} | {route} | {expected_route} | {result} | {notes} |".format(
+                case_order=row["case_order"],
                 case=row["case"],
                 tier=tier,
                 mode=row["mode"],
@@ -1015,7 +1016,8 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
         row_status = status_class(row)
         row_label = status_label(row)
         summary_rows.append(
-            "<tr>"
+            f"<tr data-case-order=\"{esc(row['case_order'])}\" data-run-order=\"{esc(row['run_order'])}\">"
+            f"<td class=\"num\">{int(row['case_order'])}</td>"
             f"<td><a href=\"#{esc(row['case'])}-{esc(row['mode'])}\">{esc(row['case'])}</a></td>"
             f"<td>{'required' if row['required'] else 'challenge'}</td>"
             f"<td>{esc(row['mode'])}</td>"
@@ -1033,7 +1035,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
         row_label = status_label(row)
         checks_text = "\n".join(str(check) for check in row["checks"])
         detail_cards.append(
-            f"<section class=\"case\" id=\"{esc(row['case'])}-{esc(row['mode'])}\">"
+            f"<section class=\"case\" id=\"{esc(row['case'])}-{esc(row['mode'])}\" data-case-order=\"{esc(row['case_order'])}\" data-run-order=\"{esc(row['run_order'])}\">"
             "<div class=\"case-head\">"
             "<div>"
             f"<h2>{esc(row['case'])}</h2>"
@@ -1048,6 +1050,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
             f"<div><span>Route</span><b>{esc(row['route'])}</b><small>expected {esc(row['expected_route'])}</small></div>"
             f"<div><span>Mode</span><b>{esc(row['mode'])}</b></div>"
             f"<div><span>Tier</span><b>{'required' if row['required'] else 'challenge'}</b></div>"
+            f"<div><span>Order</span><b>{int(row['case_order'])}</b><small>oldest first</small></div>"
             "</div>"
             "<div class=\"inspect-grid\">"
             "<figure>"
@@ -1159,6 +1162,27 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       border-radius: 8px;
       background: var(--panel);
       margin-bottom: 18px;
+    }}
+    .report-controls {{
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      margin: 0 0 10px;
+    }}
+    .report-controls label {{
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }}
+    .report-controls select {{
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--ink);
+      padding: 4px 30px 4px 10px;
+      font: inherit;
     }}
     table {{
       width: 100%;
@@ -1289,6 +1313,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       main {{ width: min(100% - 20px, 1180px); padding-top: 18px; }}
       .inspect-grid {{ grid-template-columns: 1fr; }}
       .case-head {{ align-items: stretch; flex-direction: column; }}
+      .report-controls {{ justify-content: flex-start; }}
     }}
   </style>
 </head>
@@ -1306,10 +1331,18 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       <div class="stat"><span>OCR Language</span><b>{esc(lang)}</b></div>
       <div class="stat"><span>Mode</span><b>{esc(mode)}</b></div>
     </section>
+    <section class="report-controls" aria-label="Report controls">
+      <label for="case-order">Case order</label>
+      <select id="case-order">
+        <option value="oldest" selected>Oldest to newest</option>
+        <option value="newest">Newest to oldest</option>
+      </select>
+    </section>
     <section class="table-wrap" aria-label="Result table">
       <table>
         <thead>
           <tr>
+            <th class="num">Order</th>
             <th>Case</th>
             <th>Tier</th>
             <th>Mode</th>
@@ -1327,6 +1360,33 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
     </section>
     {''.join(detail_cards)}
   </main>
+  <script>
+    (() => {{
+      const select = document.getElementById("case-order");
+      const tbody = document.querySelector("tbody");
+      const main = document.querySelector("main");
+      const rows = Array.from(tbody.querySelectorAll("tr"));
+      const cases = Array.from(document.querySelectorAll("section.case"));
+
+      const compareByOrder = (direction) => (left, right) => {{
+        const leftCase = Number(left.dataset.caseOrder);
+        const rightCase = Number(right.dataset.caseOrder);
+        if (leftCase !== rightCase) {{
+          return direction === "newest" ? rightCase - leftCase : leftCase - rightCase;
+        }}
+        return Number(left.dataset.runOrder) - Number(right.dataset.runOrder);
+      }};
+
+      const applyOrder = () => {{
+        const direction = select.value;
+        rows.slice().sort(compareByOrder(direction)).forEach((row) => tbody.appendChild(row));
+        cases.slice().sort(compareByOrder(direction)).forEach((card) => main.appendChild(card));
+      }};
+
+      select.addEventListener("change", applyOrder);
+      applyOrder();
+    }})();
+  </script>
 </body>
 </html>
 """
@@ -1377,6 +1437,8 @@ def main() -> int:
     modes = ["raw", "preprocessed"] if args.mode == "both" else ["raw", "preprocessed", "auto"] if args.mode == "all" else [args.mode]
     results: list[dict[str, object]] = []
 
+    case_orders = {case.id: index + 1 for index, case in enumerate(CASES)}
+
     for case in case_subset(args.cases):
         image = out_dir / "images" / f"{case.id}.png"
         truth_file = out_dir / "truth" / f"{case.id}.txt"
@@ -1409,6 +1471,8 @@ def main() -> int:
             passed, check_details, actual_word_ratio = evaluate_case(case, ocr_text, cer, route)
             results.append(
                 {
+                    "case_order": case_orders[case.id],
+                    "run_order": len(results) + 1,
                     "case": case.id,
                     "mode": mode,
                     "image": str(ocr_input.relative_to(out_dir)),
