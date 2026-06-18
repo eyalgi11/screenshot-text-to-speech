@@ -58,6 +58,9 @@ class Case:
     text: str
     expected_route: str
     max_cer: float
+    must_include: tuple[str, ...] = ()
+    must_not_include: tuple[str, ...] = ()
+    max_word_ratio: float = 0.0
     required: bool = True
     font_size: int = 30
     width: int = 1180
@@ -179,6 +182,8 @@ CASES: tuple[Case, ...] = (
         ),
         expected_route="default",
         max_cer=0.42,
+        must_include=("Build #7f3a", "warning", "15.6/31", "Do not read watermark icons"),
+        must_not_include=("<>", "[]", "x2"),
         required=False,
         font_size=22,
         width=1000,
@@ -258,6 +263,13 @@ CASES: tuple[Case, ...] = (
         ),
         expected_route="hebrew",
         max_cer=0.45,
+        must_include=(
+            "נא לאשר את פרטי ההזמנה לפני התשלום",
+            "מספר הזמנה",
+            "הסמלים ברקע אינם חלק מהטקסט",
+        ),
+        must_not_include=("OK", "copy", "tap"),
+        max_word_ratio=1.25,
         required=False,
         font_size=22,
         width=1080,
@@ -360,6 +372,47 @@ def error_rates(expected: str, actual: str) -> tuple[float, float]:
     actual_words = actual_norm.split()
     wer = levenshtein(expected_words, actual_words) / max(len(expected_words), 1)
     return cer, wer
+
+
+def word_ratio(expected: str, actual: str) -> float:
+    expected_words = normalize(expected).split()
+    actual_words = normalize(actual).split()
+    return len(actual_words) / max(len(expected_words), 1)
+
+
+def contains_phrase(text: str, phrase: str) -> bool:
+    return normalize(phrase) in normalize(text)
+
+
+def evaluate_case(case: Case, actual: str, cer: float, route: str) -> tuple[bool, list[str], float]:
+    checks: list[str] = []
+    passed = True
+
+    cer_ok = cer <= case.max_cer
+    passed = passed and cer_ok
+    checks.append(f"{'PASS' if cer_ok else 'FAIL'} cer {cer:.3f} <= {case.max_cer:.3f}")
+
+    route_ok = route == case.expected_route
+    passed = passed and route_ok
+    checks.append(f"{'PASS' if route_ok else 'FAIL'} route {route} == {case.expected_route}")
+
+    ratio = word_ratio(case.text, actual)
+    if case.max_word_ratio:
+        ratio_ok = ratio <= case.max_word_ratio
+        passed = passed and ratio_ok
+        checks.append(f"{'PASS' if ratio_ok else 'FAIL'} word ratio {ratio:.2f} <= {case.max_word_ratio:.2f}")
+
+    for phrase in case.must_include:
+        phrase_ok = contains_phrase(actual, phrase)
+        passed = passed and phrase_ok
+        checks.append(f"{'PASS' if phrase_ok else 'FAIL'} must include: {phrase}")
+
+    for phrase in case.must_not_include:
+        phrase_ok = not contains_phrase(actual, phrase)
+        passed = passed and phrase_ok
+        checks.append(f"{'PASS' if phrase_ok else 'FAIL'} must not include: {phrase}")
+
+    return passed, checks, ratio
 
 
 def pango_markup(case: Case) -> str:
@@ -700,7 +753,7 @@ def write_markdown_report(results: list[dict[str, object]], out_dir: Path, lang:
     ]
     for row in results:
         tier = "required" if row["required"] else "challenge"
-        result = "pass" if row["passed"] else "FAIL" if row["required"] else "WARN"
+        result = "pass" if row["passed"] else "FAIL" if row["required"] else "CHALLENGE_FAIL"
         lines.append(
             "| {case} | {tier} | {mode} | {cer:.3f} | {wer:.3f} | {route} | {expected_route} | {result} | {notes} |".format(
                 case=row["case"],
@@ -726,6 +779,13 @@ def write_markdown_report(results: list[dict[str, object]], out_dir: Path, lang:
                 f"- Ground truth: `{row['truth_file']}`",
                 f"- OCR file: `{row['ocr_file']}`",
                 f"- OCR stderr: `{row['stderr_file']}`",
+                f"- Word ratio: {float(row['word_ratio']):.2f}",
+                "",
+                "Checks:",
+                "",
+                "```text",
+                "\n".join(str(check) for check in row["checks"]),
+                "```",
                 "",
                 "```text",
                 str(row["ocr_text"]).strip(),
@@ -743,10 +803,15 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
     def esc(value: object) -> str:
         return html.escape(str(value), quote=True)
 
-    def status(row: dict[str, object]) -> str:
+    def status_class(row: dict[str, object]) -> str:
         if row["passed"]:
             return "pass"
-        return "fail" if row["required"] else "warn"
+        return "fail" if row["required"] else "challenge-fail"
+
+    def status_label(row: dict[str, object]) -> str:
+        if row["passed"]:
+            return "pass"
+        return "fail" if row["required"] else "challenge fail"
 
     def image_data_uri(row: dict[str, object]) -> str:
         image_path = out_dir / str(row["image"])
@@ -755,7 +820,8 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
 
     summary_rows = []
     for row in results:
-        row_status = status(row)
+        row_status = status_class(row)
+        row_label = status_label(row)
         summary_rows.append(
             "<tr>"
             f"<td><a href=\"#{esc(row['case'])}-{esc(row['mode'])}\">{esc(row['case'])}</a></td>"
@@ -765,13 +831,15 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
             f"<td class=\"num\">{float(row['wer']):.3f}</td>"
             f"<td>{esc(row['route'])}</td>"
             f"<td>{esc(row['expected_route'])}</td>"
-            f"<td><span class=\"pill {row_status}\">{row_status}</span></td>"
+            f"<td><span class=\"pill {row_status}\">{row_label}</span></td>"
             "</tr>"
         )
 
     detail_cards = []
     for row in results:
-        row_status = status(row)
+        row_status = status_class(row)
+        row_label = status_label(row)
+        checks_text = "\n".join(str(check) for check in row["checks"])
         detail_cards.append(
             f"<section class=\"case\" id=\"{esc(row['case'])}-{esc(row['mode'])}\">"
             "<div class=\"case-head\">"
@@ -779,11 +847,12 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
             f"<h2>{esc(row['case'])}</h2>"
             f"<p>{esc(row['notes'])}</p>"
             "</div>"
-            f"<span class=\"pill {row_status}\">{row_status}</span>"
+            f"<span class=\"pill {row_status}\">{row_label}</span>"
             "</div>"
             "<div class=\"metrics\">"
             f"<div><span>CER</span><b>{float(row['cer']):.3f}</b><small>limit {float(row['max_cer']):.3f}</small></div>"
             f"<div><span>WER</span><b>{float(row['wer']):.3f}</b></div>"
+            f"<div><span>Word Ratio</span><b>{float(row['word_ratio']):.2f}</b><small>{'limit ' + format(float(row['max_word_ratio']), '.2f') if row['max_word_ratio'] else 'no limit'}</small></div>"
             f"<div><span>Route</span><b>{esc(row['route'])}</b><small>expected {esc(row['expected_route'])}</small></div>"
             f"<div><span>Mode</span><b>{esc(row['mode'])}</b></div>"
             f"<div><span>Tier</span><b>{'required' if row['required'] else 'challenge'}</b></div>"
@@ -806,6 +875,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
             "</div>"
             "<details>"
             "<summary>Route and OCR diagnostics</summary>"
+            f"<pre>{esc(checks_text)}</pre>"
             f"<pre>{esc(json.dumps(row['route_info'], indent=2, ensure_ascii=False))}</pre>"
             f"<pre>{esc(row['stderr_text']).strip()}</pre>"
             "</details>"
@@ -830,6 +900,8 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       --pass-bg: #dff3e8;
       --warn: #8a5a00;
       --warn-bg: #fff1c7;
+      --challenge-fail: #7c4a03;
+      --challenge-fail-bg: #ffe2a8;
       --fail: #9e2b25;
       --fail-bg: #f8dfdc;
       --accent: #365f91;
@@ -931,6 +1003,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
     }}
     .pill.pass {{ background: var(--pass-bg); color: var(--pass); }}
     .pill.warn {{ background: var(--warn-bg); color: var(--warn); }}
+    .pill.challenge-fail {{ background: var(--challenge-fail-bg); color: var(--challenge-fail); }}
     .pill.fail {{ background: var(--fail-bg); color: var(--fail); }}
     .case {{
       padding: 16px;
@@ -1037,7 +1110,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       <div class="stat"><span>Cases</span><b>{len(results)}</b></div>
       <div class="stat"><span>Failures</span><b>{len(failures)}</b></div>
       <div class="stat"><span>Blocking Failures</span><b>{len(blocking_failures)}</b></div>
-      <div class="stat"><span>Challenge Warnings</span><b>{len(challenge_failures)}</b></div>
+      <div class="stat"><span>Challenge Failures</span><b>{len(challenge_failures)}</b></div>
       <div class="stat"><span>OCR Language</span><b>{esc(lang)}</b></div>
       <div class="stat"><span>Mode</span><b>{esc(mode)}</b></div>
     </section>
@@ -1141,7 +1214,7 @@ def main() -> int:
 
             cer, wer = error_rates(case.text, ocr_text)
             route, route_info = detect_route(ocr_text, config)
-            passed = cer <= case.max_cer and route == case.expected_route
+            passed, check_details, actual_word_ratio = evaluate_case(case, ocr_text, cer, route)
             results.append(
                 {
                     "case": case.id,
@@ -1153,6 +1226,11 @@ def main() -> int:
                     "cer": cer,
                     "wer": wer,
                     "max_cer": case.max_cer,
+                    "word_ratio": actual_word_ratio,
+                    "max_word_ratio": case.max_word_ratio,
+                    "must_include": list(case.must_include),
+                    "must_not_include": list(case.must_not_include),
+                    "checks": check_details,
                     "required": case.required,
                     "route": route,
                     "expected_route": case.expected_route,
@@ -1174,13 +1252,14 @@ def main() -> int:
     print(f"HTML report: {out_dir / 'report.html'}")
     print(
         f"Cases: {len(results)}  Failures: {len(failures)}  "
-        f"Blocking: {len(blocking_failures)}  Challenge warnings: {len(challenge_failures)}"
+        f"Blocking: {len(blocking_failures)}  Challenge failures: {len(challenge_failures)}"
     )
     for row in results:
-        status = "PASS" if row["passed"] else "FAIL" if row["required"] else "WARN"
+        status = "PASS" if row["passed"] else "FAIL" if row["required"] else "CHALLENGE_FAIL"
         print(
             f"{status} {row['case']}[{row['mode']}]: "
             f"CER={row['cer']:.3f} WER={row['wer']:.3f} "
+            f"word_ratio={row['word_ratio']:.2f} "
             f"route={row['route']} expected={row['expected_route']}"
         )
     return 1 if blocking_failures else 0
