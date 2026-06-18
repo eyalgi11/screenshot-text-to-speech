@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
 import os
@@ -406,6 +407,11 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
     def status(row: dict[str, object]) -> str:
         return "pass" if row["passed"] else "fail"
 
+    def image_data_uri(row: dict[str, object]) -> str:
+        image_path = out_dir / str(row["image"])
+        encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+
     summary_rows = []
     for row in results:
         row_status = status(row)
@@ -441,8 +447,8 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
             "</div>"
             "<div class=\"inspect-grid\">"
             "<figure>"
-            f"<img src=\"{esc(row['image'])}\" alt=\"Generated OCR test image for {esc(row['case'])}\">"
-            "<figcaption>Generated image</figcaption>"
+            f"<img src=\"{image_data_uri(row)}\" alt=\"Generated OCR test image for {esc(row['case'])}\">"
+            f"<figcaption>Generated image: {esc(row['image'])}</figcaption>"
             "</figure>"
             "<div class=\"text-pair\">"
             "<div>"

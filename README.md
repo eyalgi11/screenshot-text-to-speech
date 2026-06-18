@@ -238,7 +238,7 @@ scripts/stress-ocr
 ```
 
 The stress test writes images, OCR text, route decisions, `report.md`, and an
-inspectable `report.html` under `tmp/ocr-stress/latest`. Use
+inspectable self-contained `report.html` under `tmp/ocr-stress/latest`. Use
 `scripts/stress-ocr --mode all` to compare raw OCR, always-preprocessed OCR,
 and the app's automatic fallback.
 
