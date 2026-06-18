@@ -237,9 +237,10 @@ OCR stress test with generated hard text images:
 scripts/stress-ocr
 ```
 
-The stress test writes images, OCR text, route decisions, and a Markdown report
-under `tmp/ocr-stress/latest`. Use `scripts/stress-ocr --mode all` to compare
-raw OCR, always-preprocessed OCR, and the app's automatic fallback.
+The stress test writes images, OCR text, route decisions, `report.md`, and an
+inspectable `report.html` under `tmp/ocr-stress/latest`. Use
+`scripts/stress-ocr --mode all` to compare raw OCR, always-preprocessed OCR,
+and the app's automatic fallback.
 
 The checker does not download OmniVoice model weights. The first real OmniVoice
 generation may download the model from Hugging Face into the normal cache.
