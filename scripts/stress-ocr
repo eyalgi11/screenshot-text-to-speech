@@ -38,9 +38,17 @@ BIDI_MARKS = {
 }
 
 OVERLAY_EFFECTS = {
+    "edge_badges",
     "thin_rules",
     "ui_symbol_distractors",
     "math_symbol_distractors",
+    "watermark_symbols",
+}
+
+POST_EFFECTS = {
+    "camera_warp",
+    "jpeg_artifacts",
+    "paper_texture",
 }
 
 
@@ -146,6 +154,57 @@ CASES: tuple[Case, ...] = (
         notes="Math-like symbols and glyph clusters around real text.",
     ),
     Case(
+        id="photo_receipt_clutter",
+        text=(
+            "Cafe 48 / table 07\n"
+            "Subtotal $18.40  tip?  total $22.10\n"
+            "Paid by card ending O0I1."
+        ),
+        expected_route="default",
+        max_cer=0.45,
+        required=False,
+        font_size=22,
+        width=860,
+        fill="#2c2a25",
+        background="#f4f0df",
+        effects=("thin_rules", "edge_badges", "paper_texture", "camera_warp", "jpeg_artifacts"),
+        notes="Generated receipt-photo style case with texture, perspective, compression, and ambiguous O/0/I/1.",
+    ),
+    Case(
+        id="dark_overlay_status",
+        text=(
+            "Build #7f3a: warning\n"
+            "GPU mem 15.6/31 GB | temp 72C\n"
+            "Do not read watermark icons."
+        ),
+        expected_route="default",
+        max_cer=0.42,
+        required=False,
+        font_size=22,
+        width=1000,
+        fill="#d8e3e7",
+        background="#1f2528",
+        effects=("watermark_symbols", "math_symbol_distractors", "blur", "jpeg_artifacts"),
+        notes="Dark screenshot-like case with pale text, watermark symbols, and compression artifacts.",
+    ),
+    Case(
+        id="web_card_noise",
+        text=(
+            "Login code: S8B-O0I\n"
+            "Expires in 04:59. Never share this code.\n"
+            "Button labels nearby are not part of the message."
+        ),
+        expected_route="default",
+        max_cer=0.45,
+        required=False,
+        font_size=21,
+        width=1120,
+        fill="#202124",
+        background="#f6f8fb",
+        effects=("edge_badges", "ui_symbol_distractors", "thin_rules", "paper_texture"),
+        notes="Web-card style case with nearby controls and ambiguous code characters.",
+    ),
+    Case(
         id="hebrew_clean_paragraph",
         text=(
             "כן. אושילנד כפר סבא פתוחה בשבת.\n"
@@ -189,6 +248,23 @@ CASES: tuple[Case, ...] = (
         effects=("resize_90", "thin_rules", "ui_symbol_distractors"),
         required=False,
         notes="Hebrew text surrounded by UI-like symbols that should not become TTS text.",
+    ),
+    Case(
+        id="hebrew_photo_notice",
+        text=(
+            "נא לאשר את פרטי ההזמנה לפני התשלום.\n"
+            "מספר הזמנה: 10-0O1I.\n"
+            "הסמלים ברקע אינם חלק מהטקסט."
+        ),
+        expected_route="hebrew",
+        max_cer=0.45,
+        required=False,
+        font_size=22,
+        width=1080,
+        fill="#272727",
+        background="#f2eee0",
+        effects=("edge_badges", "watermark_symbols", "paper_texture", "camera_warp", "jpeg_artifacts"),
+        notes="Hebrew notice on generated photo-like paper with watermark symbols and ambiguous digits.",
     ),
     Case(
         id="mixed_hebrew_ui",
@@ -302,6 +378,7 @@ def run(cmd: list[str], *, input_text: str | None = None) -> subprocess.Complete
 
 
 def generate_image(case: Case, path: Path) -> None:
+    border_size = "44" if "camera_warp" in case.effects else "28"
     base = [
         "magick",
         "-seed",
@@ -316,10 +393,11 @@ def generate_image(case: Case, path: Path) -> None:
         "-bordercolor",
         case.background,
         "-border",
-        "28",
+        border_size,
     ]
     effects: list[str] = []
     overlay_effects: list[str] = []
+    post_effects: list[str] = []
     for effect in case.effects:
         if effect == "blur":
             effects.extend(["-blur", "0x0.7"])
@@ -335,6 +413,8 @@ def generate_image(case: Case, path: Path) -> None:
             effects.extend(["-background", case.background, "-rotate", "1"])
         elif effect in OVERLAY_EFFECTS:
             overlay_effects.append(effect)
+        elif effect in POST_EFFECTS:
+            post_effects.append(effect)
         else:
             raise ValueError(f"Unknown effect: {effect}")
 
@@ -343,6 +423,9 @@ def generate_image(case: Case, path: Path) -> None:
         raise RuntimeError(f"Image generation failed for {case.id}:\n{proc.stderr}")
     for effect in overlay_effects:
         apply_overlay_effect(case, path, effect)
+    for effect in post_effects:
+        apply_post_effect(case, path, effect)
+    strip_image_metadata(path)
 
 
 def image_size(path: Path) -> tuple[int, int]:
@@ -378,6 +461,37 @@ def apply_overlay_effect(case: Case, path: Path, effect: str) -> None:
             y2 = min(height - 8, y1 + rng.randint(22, 58))
             args.extend(["-draw", f"rectangle {x1},{y1} {x2},{y2}"])
 
+    elif effect == "edge_badges":
+        tokens = ["OK", "?", "x", "!", "::", "copy", "tap", "ID", "#", "⋯"]
+        args.extend(["-font", "DejaVu-Sans", "-fill", "#9aa19a"])
+        for _ in range(8):
+            token = rng.choice(tokens)
+            size = rng.randint(12, 20)
+            x1 = rng.choice([rng.randint(8, 110), rng.randint(max(12, width - 150), max(14, width - 55))])
+            y1 = rng.randint(12, max(18, height - 34))
+            x2 = min(width - 8, x1 + rng.randint(34, 84))
+            y2 = min(height - 8, y1 + rng.randint(20, 34))
+            args.extend(
+                [
+                    "-fill",
+                    "#e7ebe4",
+                    "-stroke",
+                    "#c8cec4",
+                    "-strokewidth",
+                    "1",
+                    "-draw",
+                    f"roundrectangle {x1},{y1} {x2},{y2} 6,6",
+                    "-stroke",
+                    "none",
+                    "-fill",
+                    "#8b918a",
+                    "-pointsize",
+                    str(size),
+                    "-draw",
+                    draw_text_command(x1 + 8, y1 + size + 2, token),
+                ]
+            )
+
     elif effect == "ui_symbol_distractors":
         tokens = ["[ ]", "[x]", "::", "||", "!!", "?", "#", "@", "0O", "1lI", "<>", "/\\", "++", "--"]
         args.extend(["-font", "DejaVu-Sans", "-fill", "#8b918a"])
@@ -390,6 +504,16 @@ def apply_overlay_effect(case: Case, path: Path, effect: str) -> None:
             else:
                 x = rng.randint(6, max(8, width - 70))
                 y = rng.choice([rng.randint(16, 36), rng.randint(max(20, height - 34), max(22, height - 8))])
+            args.extend(["-pointsize", str(size), "-draw", draw_text_command(x, y, token)])
+
+    elif effect == "watermark_symbols":
+        tokens = ["@", "#", "?", "0O", "I1", "<>", "[]", "||", "⋯", "₪", "%"]
+        args.extend(["-font", "DejaVu-Sans", "-fill", "#a8ada6"])
+        for _ in range(10):
+            token = rng.choice(tokens)
+            size = rng.randint(26, 58)
+            x = rng.randint(4, max(8, width - 92))
+            y = rng.randint(30, max(34, height - 8))
             args.extend(["-pointsize", str(size), "-draw", draw_text_command(x, y, token)])
 
     elif effect == "math_symbol_distractors":
@@ -413,6 +537,75 @@ def apply_overlay_effect(case: Case, path: Path, effect: str) -> None:
     proc = run(["magick", str(path), *args, str(tmp)])
     if proc.returncode != 0:
         raise RuntimeError(f"Overlay effect {effect} failed for {case.id}:\n{proc.stderr}")
+    tmp.replace(path)
+
+
+def apply_post_effect(case: Case, path: Path, effect: str) -> None:
+    width, height = image_size(path)
+    tmp = path.with_suffix(f".{effect}.png")
+
+    if effect == "paper_texture":
+        seed = str(sum(ord(ch) for ch in f"{case.id}:{effect}"))
+        proc = run(
+            [
+                "magick",
+                "-seed",
+                seed,
+                str(path),
+                "-attenuate",
+                "0.10",
+                "+noise",
+                "Gaussian",
+                "-brightness-contrast",
+                "1x4",
+                str(tmp),
+            ]
+        )
+
+    elif effect == "camera_warp":
+        points = (
+            f"0,0 8,6 "
+            f"{width},0 {max(0, width - 10)},11 "
+            f"0,{height} 12,{max(0, height - 6)} "
+            f"{width},{height} {max(0, width - 15)},{max(0, height - 3)}"
+        )
+        proc = run(
+            [
+                "magick",
+                str(path),
+                "-virtual-pixel",
+                "edge",
+                "-distort",
+                "Perspective",
+                points,
+                "+repage",
+                "-blur",
+                "0x0.25",
+                str(tmp),
+            ]
+        )
+
+    elif effect == "jpeg_artifacts":
+        jpg = path.with_suffix(".jpeg-artifacts.jpg")
+        proc = run(["magick", str(path), "-quality", "38", str(jpg)])
+        if proc.returncode == 0:
+            proc = run(["magick", str(jpg), str(tmp)])
+        if jpg.exists():
+            jpg.unlink()
+
+    else:
+        raise ValueError(f"Unknown post effect: {effect}")
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"Post effect {effect} failed for {case.id}:\n{proc.stderr}")
+    tmp.replace(path)
+
+
+def strip_image_metadata(path: Path) -> None:
+    tmp = path.with_suffix(".stripped.png")
+    proc = run(["magick", str(path), "-strip", "-define", "png:exclude-chunk=all", str(tmp)])
+    if proc.returncode != 0:
+        raise RuntimeError(f"Could not strip image metadata for {path}:\n{proc.stderr}")
     tmp.replace(path)
 
 
