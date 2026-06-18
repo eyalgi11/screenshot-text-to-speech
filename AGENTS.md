@@ -11,6 +11,7 @@ scripts/check-portable
 scripts/install
 scripts/setup-omnivoice
 scripts/setup-hebrew-blue
+scripts/setup-paddleocr
 scripts/stress-ocr
 scripts/record-reference-voice
 scripts/install-desktop-integration

@@ -154,6 +154,7 @@ OCR_QUALITY_MIN_CHARS="${STTS_OCR_QUALITY_MIN_CHARS:-4}"
 OCR_QUALITY_MAX_JUNK_RATIO="${STTS_OCR_QUALITY_MAX_JUNK_RATIO:-0.42}"
 OCR_QUALITY_MIN_AGREEMENT="${STTS_OCR_QUALITY_MIN_AGREEMENT:-0.60}"
 OCR_FALLBACK_BIN="${STTS_OCR_FALLBACK_BIN:-}"
+OCR_FALLBACK_ROUTES="${STTS_OCR_FALLBACK_ROUTES:-default}"
 MODEL="${STTS_OMNIVOICE_MODEL:-k2-fsa/OmniVoice}"
 DEVICE="${STTS_OMNIVOICE_DEVICE:-}"
 LANGUAGE="${STTS_OMNIVOICE_LANGUAGE:-}"
@@ -289,11 +290,24 @@ run_fallback_ocr() {
   log "Trying OCR fallback: $OCR_FALLBACK_BIN"
   notify "OCR looked unreliable. Trying fallback OCR."
   rm -f -- "$ocr_file" "$ocr_metrics"
-  "$OCR_FALLBACK_BIN" \
+  STTS_OCR_METRICS_OUTPUT="$ocr_metrics" "$OCR_FALLBACK_BIN" \
     --image "$shot" \
     --output "$ocr_file" \
     --lang "$OCR_LANG" \
     --psm "$OCR_PSM" >>"$LOG_FILE" 2>&1
+}
+
+route_allows_fallback() {
+  local route="$1"
+  local item
+  IFS=',' read -r -a fallback_routes <<<"$OCR_FALLBACK_ROUTES"
+  for item in "${fallback_routes[@]}"; do
+    item="${item//[[:space:]]/}"
+    if [[ "$item" == "all" || "$item" == "$route" ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 LOCK_FILE="$RUN_DIR/lock"
@@ -359,6 +373,10 @@ fi
 load_ocr_text
 if ! check_ocr_quality; then
   primary_quality_reasons="$ocr_quality_reasons"
+  detect_text_route
+  if ! route_allows_fallback "$tts_route"; then
+    die "OCR looked unreliable ($primary_quality_reasons) on route '$tts_route'. I did not read it aloud."
+  fi
   if run_fallback_ocr; then
     load_ocr_text
     if ! check_ocr_quality; then

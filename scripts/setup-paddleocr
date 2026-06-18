@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+PYTHON="${STTS_PADDLEOCR_PYTHON:-$PROJECT_DIR/.venv/bin/python}"
+
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Missing Python for PaddleOCR: $PYTHON" >&2
+  echo "Run scripts/setup-omnivoice first, or set STTS_PADDLEOCR_PYTHON." >&2
+  exit 1
+fi
+
+version="$("$PYTHON" - <<'PY'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}")
+PY
+)"
+case "$version" in
+  3.8|3.9|3.10|3.11|3.12) ;;
+  *)
+    echo "PaddleOCR supports Python 3.8-3.12; $PYTHON is Python $version." >&2
+    exit 1
+    ;;
+esac
+
+if command -v uv >/dev/null 2>&1; then
+  install_pkg=(uv pip install --python "$PYTHON")
+else
+  "$PYTHON" -m ensurepip --upgrade
+  "$PYTHON" -m pip install --upgrade pip wheel
+  install_pkg=("$PYTHON" -m pip install)
+fi
+
+"${install_pkg[@]}" "paddleocr>=3.7,<4"
+
+torch_info="$("$PYTHON" - <<'PY'
+import importlib.util
+try:
+    import torch
+except Exception:
+    raise SystemExit(0)
+if importlib.util.find_spec("torchvision"):
+    raise SystemExit(0)
+version = torch.__version__
+if version.startswith("2.8.0+cu128"):
+    print("cu128")
+elif version.startswith("2.8.0"):
+    print("cpu")
+PY
+)"
+case "$torch_info" in
+  cu128)
+    "${install_pkg[@]}" --index-url https://download.pytorch.org/whl/cu128 "torchvision==0.23.0+cu128"
+    ;;
+  cpu)
+    "${install_pkg[@]}" "torchvision==0.23.0"
+    ;;
+esac
+
+cat <<EOF
+PaddleOCR installed for:
+  $PYTHON
+
+To use it as the OCR fallback, set this in config/screenshot-tts.env:
+  STTS_OCR_FALLBACK_BIN=$PROJECT_DIR/bin/paddleocr-image
+  STTS_PADDLEOCR_ENGINE=transformers
+
+Optional GPU/engine knobs:
+  STTS_PADDLEOCR_DEVICE=gpu:0
+  STTS_PADDLEOCR_ENGINE=paddle
+EOF

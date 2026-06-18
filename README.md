@@ -51,6 +51,22 @@ For CPU-only setup:
 scripts/install --cpu
 ```
 
+Optional stronger OCR fallback for difficult English/Latin screenshots:
+
+```sh
+scripts/setup-paddleocr
+```
+
+Then set:
+
+```sh
+STTS_OCR_FALLBACK_BIN=/absolute/path/to/bin/paddleocr-image
+```
+
+PaddleOCR's current PP-OCRv6 line is useful for many scene-OCR cases, but its
+official language table does not list Hebrew. Keep Tesseract OCR for Hebrew
+captures.
+
 The installer creates `.venv`, installs OmniVoice from
 `https://github.com/k2-fsa/OmniVoice`, installs `python-xlib` for the X11 hotkey
 daemon, and creates `config/screenshot-tts.env` from `config/example.env` if it
@@ -216,6 +232,18 @@ Important options:
 - `STTS_OCR_FALLBACK_BIN=/path/to/ocr-backend` optionally tries another OCR
   command when the primary OCR is blocked. The command must accept
   `--image`, `--output`, `--lang`, and `--psm`.
+- `STTS_OCR_FALLBACK_ROUTES=default` limits fallback OCR to non-Hebrew text
+  routes by default. Use `all` only for a fallback backend that you have tested
+  on Hebrew.
+- `STTS_PADDLEOCR_DEVICE=gpu:0` can be used with `bin/paddleocr-image` when
+  PaddleOCR/PaddlePaddle is installed with GPU support. Leave empty for
+  PaddleOCR's automatic device choice.
+- `STTS_PADDLEOCR_ENGINE=transformers` matches `scripts/setup-paddleocr`,
+  which uses the existing Torch/Transformers environment instead of requiring
+  a separate PaddlePaddle runtime.
+- `STTS_PADDLEOCR_LANG=auto`, `en`, or another PaddleOCR language code. `auto`
+  maps `eng`/`eng+heb` OCR hints to PaddleOCR English because PaddleOCR does
+  not list Hebrew support.
 - `STTS_REF_AUDIO` and `STTS_REF_TEXT_FILE` for a local reference voice.
 - `STTS_OMNIVOICE_INSTRUCT` for voice design without cloning a real person.
 - `STTS_OMNIVOICE_DEVICE=cuda:0` to force a GPU, or leave empty for auto.
@@ -259,8 +287,14 @@ and the app's automatic fallback.
 
 The bakeoff writes `tmp/ocr-bakeoff/latest/report.md` and compares several
 Tesseract page segmentation modes and preprocessing recipes on the failing
-challenge cases. Use it before deciding whether to tune preprocessing or add a
-second OCR backend for hard screenshots.
+challenge cases. It can also compare an external backend:
+
+```sh
+scripts/ocr-bakeoff --external-bin paddleocr=bin/paddleocr-image
+```
+
+Use it before deciding whether to tune preprocessing or make a second OCR
+backend part of the live fallback path.
 
 Some generated images are required baseline cases; harder symbol-clutter,
 graphic-overlay, photo-like, dark-overlay, and web-card images are challenge

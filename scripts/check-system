@@ -101,6 +101,8 @@ printf 'OK   quality gate       %s\n' "${STTS_OCR_QUALITY_GATE:-normal}"
 printf 'OK   min confidence     %s\n' "${STTS_OCR_QUALITY_MIN_CONFIDENCE:-35}"
 printf 'OK   max junk ratio     %s\n' "${STTS_OCR_QUALITY_MAX_JUNK_RATIO:-0.42}"
 printf 'OK   min agreement      %s\n' "${STTS_OCR_QUALITY_MIN_AGREEMENT:-0.60}"
+printf 'OK   fallback routes    %s\n' "${STTS_OCR_FALLBACK_ROUTES:-default}"
+printf 'OK   paddleocr engine   %s\n' "${STTS_PADDLEOCR_ENGINE:-transformers}"
 if [[ -n "${STTS_OCR_FALLBACK_BIN:-}" ]]; then
   if [[ "${STTS_OCR_FALLBACK_BIN:-}" == */* && -x "${STTS_OCR_FALLBACK_BIN:-}" ]] || command -v "${STTS_OCR_FALLBACK_BIN:-}" >/dev/null 2>&1; then
     printf 'OK   OCR fallback       %s\n' "$STTS_OCR_FALLBACK_BIN"
@@ -110,6 +112,16 @@ if [[ -n "${STTS_OCR_FALLBACK_BIN:-}" ]]; then
   fi
 else
   printf 'INFO OCR fallback       not configured\n'
+fi
+PADDLE_PYTHON="${STTS_PADDLEOCR_PYTHON:-$PROJECT_DIR/.venv/bin/python}"
+if [[ -x "$PADDLE_PYTHON" ]] && "$PADDLE_PYTHON" - <<'PY' >/dev/null 2>&1
+import importlib.util
+raise SystemExit(0 if importlib.util.find_spec("paddleocr") else 1)
+PY
+then
+  printf 'OK   python:paddleocr   %s\n' "$PADDLE_PYTHON"
+else
+  printf 'INFO python:paddleocr   optional; run scripts/setup-paddleocr\n'
 fi
 
 printf '\nHebrew TTS routing:\n'

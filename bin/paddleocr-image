@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""OCR an image with PaddleOCR as an optional fallback backend."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import sys
+import unicodedata
+from pathlib import Path
+from typing import Any
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+PROJECT_CONFIG = PROJECT_DIR / "config" / "screenshot-tts.env"
+
+BIDI_MARKS = {
+    "\u200e",
+    "\u200f",
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
+    "\u2066",
+    "\u2067",
+    "\u2068",
+    "\u2069",
+}
+
+
+def parse_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        try:
+            values[key.strip()] = shlex.split(value, posix=True)[0] if value.strip() else ""
+        except ValueError:
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+CONFIG = parse_env_file(PROJECT_CONFIG)
+
+
+def config_value(name: str, default: str = "") -> str:
+    return os.environ.get(name, CONFIG.get(name, default))
+
+
+def preferred_python() -> Path:
+    configured = config_value("STTS_PADDLEOCR_PYTHON")
+    return Path(configured).expanduser() if configured else PROJECT_DIR / ".venv" / "bin" / "python"
+
+
+def reexec_with_preferred_python() -> None:
+    preferred = preferred_python()
+    if not preferred.exists():
+        return
+    try:
+        if preferred.resolve() == Path(sys.executable).resolve():
+            return
+    except OSError:
+        return
+    os.execv(str(preferred), [str(preferred), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="OCR an image with PaddleOCR")
+    p.add_argument("--image", required=True, help="Input image")
+    p.add_argument("--output", required=True, help="Output OCR text file")
+    p.add_argument("--lang", default="eng", help="Tesseract-style input language hint")
+    p.add_argument("--psm", default="6", help="Accepted for fallback compatibility; ignored")
+    p.add_argument("--metrics-output", default=config_value("STTS_OCR_METRICS_OUTPUT"), help="Where to write OCR diagnostics JSON")
+    p.add_argument("--paddle-lang", default=config_value("STTS_PADDLEOCR_LANG", "auto"))
+    p.add_argument("--device", default=config_value("STTS_PADDLEOCR_DEVICE"))
+    p.add_argument("--ocr-version", default=config_value("STTS_PADDLEOCR_VERSION", "PP-OCRv6"))
+    p.add_argument("--engine", default=config_value("STTS_PADDLEOCR_ENGINE"))
+    p.add_argument("--det-model", default=config_value("STTS_PADDLEOCR_DET_MODEL"))
+    p.add_argument("--rec-model", default=config_value("STTS_PADDLEOCR_REC_MODEL"))
+    p.add_argument("--min-score", type=float, default=float(config_value("STTS_PADDLEOCR_MIN_SCORE", "0.0")))
+    return p
+
+
+def map_lang(tesseract_lang: str, paddle_lang: str) -> str:
+    if paddle_lang and paddle_lang != "auto":
+        return paddle_lang
+    langs = {part.strip().lower() for part in re.split(r"[+,]", tesseract_lang) if part.strip()}
+    if langs <= {"heb"}:
+        raise SystemExit("PaddleOCR fallback does not support Hebrew in the official language list")
+    if "eng" in langs or "en" in langs:
+        return "en"
+    return "en"
+
+
+def import_paddleocr() -> Any:
+    try:
+        from paddleocr import PaddleOCR
+    except ModuleNotFoundError as exc:
+        raise SystemExit("Missing paddleocr. Run scripts/setup-paddleocr first.") from exc
+    return PaddleOCR
+
+
+def build_pipeline(args: argparse.Namespace) -> Any:
+    PaddleOCR = import_paddleocr()
+    kwargs: dict[str, object] = {
+        "lang": map_lang(args.lang, args.paddle_lang),
+        "ocr_version": args.ocr_version,
+        "use_doc_orientation_classify": False,
+        "use_doc_unwarping": False,
+        "use_textline_orientation": False,
+    }
+    optional = {
+        "device": args.device,
+        "engine": args.engine,
+        "text_detection_model_name": args.det_model,
+        "text_recognition_model_name": args.rec_model,
+    }
+    kwargs.update({key: value for key, value in optional.items() if value})
+    try:
+        return PaddleOCR(**kwargs)
+    except TypeError:
+        legacy_kwargs = {"lang": kwargs["lang"], "use_angle_cls": False}
+        if args.device:
+            legacy_kwargs["use_gpu"] = args.device.startswith("gpu")
+        return PaddleOCR(**legacy_kwargs)
+
+
+def read_result_value(obj: Any, key: str) -> Any:
+    if isinstance(obj, dict) and key in obj:
+        return obj[key]
+    try:
+        return obj[key]
+    except Exception:
+        pass
+    return getattr(obj, key, None)
+
+
+def to_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def legacy_pairs(value: Any) -> list[tuple[str, float | None]]:
+    pairs: list[tuple[str, float | None]] = []
+    if not isinstance(value, (list, tuple)):
+        return pairs
+    for item in value:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            payload = item[1]
+            if isinstance(payload, (list, tuple)) and len(payload) >= 1 and isinstance(payload[0], str):
+                score = None
+                if len(payload) >= 2:
+                    try:
+                        score = float(payload[1])
+                    except (TypeError, ValueError):
+                        score = None
+                pairs.append((payload[0], score))
+            else:
+                pairs.extend(legacy_pairs(item))
+    return pairs
+
+
+def result_mapping(obj: Any) -> Any:
+    for attr in ("res", "json"):
+        value = getattr(obj, attr, None)
+        if value is not None and not callable(value):
+            return value
+    return obj
+
+
+def extract_pairs(value: Any) -> list[tuple[str, float | None]]:
+    value = result_mapping(value)
+    texts = read_result_value(value, "rec_texts")
+    if texts is not None:
+        scores = to_list(read_result_value(value, "rec_scores"))
+        pairs: list[tuple[str, float | None]] = []
+        for index, text in enumerate(to_list(texts)):
+            if not isinstance(text, str):
+                continue
+            score = None
+            if index < len(scores):
+                try:
+                    score = float(scores[index])
+                except (TypeError, ValueError):
+                    score = None
+            pairs.append((text, score))
+        return pairs
+
+    legacy = legacy_pairs(value)
+    if legacy:
+        return legacy
+
+    pairs: list[tuple[str, float | None]] = []
+    if isinstance(value, dict):
+        for child in value.values():
+            pairs.extend(extract_pairs(child))
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            pairs.extend(extract_pairs(child))
+    return pairs
+
+
+def text_stats(text: str) -> dict[str, int | float | dict[str, int]]:
+    nonspace = [ch for ch in text if not ch.isspace()]
+    text_chars = len(nonspace)
+    control_chars = sum(1 for ch in nonspace if ch not in BIDI_MARKS and unicodedata.category(ch).startswith("C"))
+    symbol_chars = sum(1 for ch in nonspace if unicodedata.category(ch).startswith("S"))
+    tokens = [token for token in re.split(r"\s+", text.strip()) if any(ch.isalnum() for ch in token)]
+    return {
+        "text_chars": text_chars,
+        "word_tokens": len(tokens),
+        "letter_chars": sum(1 for ch in nonspace if ch.isalpha()),
+        "digit_chars": sum(1 for ch in nonspace if ch.isdigit()),
+        "control_chars": control_chars,
+        "symbol_chars": symbol_chars,
+        "junk_ratio": (control_chars + symbol_chars) / max(text_chars, 1),
+        "script_counts": {
+            "latin": sum(1 for ch in nonspace if "LATIN" in unicodedata.name(ch, "")),
+            "hebrew": sum(1 for ch in nonspace if "\u0590" <= ch <= "\u05ff"),
+        },
+    }
+
+
+def write_metrics(path: str, args: argparse.Namespace, text: str, scores: list[float]) -> None:
+    if not path:
+        return
+    confidence = (sum(scores) / len(scores) * 100.0) if scores else -1.0
+    metrics = {
+        "engine": "paddleocr",
+        "lang": map_lang(args.lang, args.paddle_lang),
+        "ocr_version": args.ocr_version,
+        "device": args.device or "auto",
+        "selected": "paddleocr",
+        "candidates": {
+            "paddleocr": {
+                "confidence": confidence,
+                "tsv_words": len(scores),
+                **text_stats(text),
+            }
+        },
+    }
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def run_predict(pipeline: Any, image: Path) -> Any:
+    if hasattr(pipeline, "predict"):
+        return pipeline.predict(str(image))
+    if hasattr(pipeline, "ocr"):
+        return pipeline.ocr(str(image), cls=False)
+    raise RuntimeError("PaddleOCR object has neither predict() nor ocr()")
+
+
+def main() -> int:
+    reexec_with_preferred_python()
+    args = parser().parse_args()
+    image = Path(args.image)
+    output = Path(args.output)
+    pipeline = build_pipeline(args)
+    result = run_predict(pipeline, image)
+
+    pairs = extract_pairs(result)
+    lines: list[str] = []
+    scores: list[float] = []
+    for text, score in pairs:
+        text = text.strip()
+        if not text:
+            continue
+        if score is not None:
+            scores.append(score)
+            if score < args.min_score:
+                continue
+        lines.append(text)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    final_text = "\n".join(lines).strip()
+    output.write_text(final_text + ("\n" if final_text else ""), encoding="utf-8")
+    write_metrics(args.metrics_output, args, final_text, scores)
+    print(f"PaddleOCR lines={len(lines)} scored={len(scores)}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

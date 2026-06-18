@@ -7,6 +7,7 @@ import argparse
 import importlib.machinery
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -54,6 +55,12 @@ def parser() -> argparse.ArgumentParser:
         default="raw,current,contrast,screen,threshold,dark",
         help="Comma-separated preprocess variants",
     )
+    p.add_argument(
+        "--external-bin",
+        action="append",
+        default=[],
+        help="External OCR backend to compare, as name=path or path. May be repeated.",
+    )
     p.add_argument("--no-clean", action="store_true", help="Keep existing output directory contents")
     return p
 
@@ -86,6 +93,37 @@ def unique(values: list[str]) -> list[str]:
 def default_psms(config: dict[str, str]) -> list[str]:
     configured = config.get("STTS_OCR_PSM", "6")
     return unique([configured, "6", "4", "11", "12"])
+
+
+def resolve_backend_command(command: str) -> str:
+    path = Path(command).expanduser()
+    if "/" in command:
+        if not path.is_absolute():
+            path = PROJECT_DIR / path
+        path = path.resolve()
+        if not path.exists():
+            raise SystemExit(f"External OCR backend does not exist: {path}")
+        return str(path)
+    resolved = shutil.which(command)
+    if not resolved:
+        raise SystemExit(f"External OCR backend is not in PATH: {command}")
+    return resolved
+
+
+def external_backends(values: list[str]) -> list[tuple[str, str]]:
+    backends: list[tuple[str, str]] = []
+    for raw in values:
+        if "=" in raw:
+            name, command = raw.split("=", 1)
+            name = name.strip()
+            command = command.strip()
+        else:
+            command = raw.strip()
+            name = Path(command).name
+        if not name or not command:
+            raise SystemExit(f"Invalid --external-bin value: {raw}")
+        backends.append((name, resolve_backend_command(command)))
+    return backends
 
 
 def cases_from_latest_failures(path: Path) -> list[str]:
@@ -210,6 +248,13 @@ def row_excerpt(text: str, limit: int = 90) -> str:
     return line[: limit - 3] + "..."
 
 
+def candidate_label(row: dict[str, Any]) -> str:
+    psm = str(row.get("psm", ""))
+    if not psm:
+        return str(row["variant"])
+    return f"{row['variant']}/psm{psm}"
+
+
 def write_report(results: list[dict[str, Any]], out_dir: Path, lang: str, psms: list[str], variants: list[str]) -> None:
     by_case: dict[str, list[dict[str, Any]]] = {}
     for row in results:
@@ -225,7 +270,7 @@ def write_report(results: list[dict[str, Any]], out_dir: Path, lang: str, psms: 
         f"- Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
         f"- OCR language: `{lang}`",
         f"- PSMs: `{', '.join(psms)}`",
-        f"- Variants: `{', '.join(variants)}`",
+        f"- Candidates: `{', '.join(variants)}`",
         f"- Cases: {len(by_case)}",
         f"- Passing with at least one candidate: {len(improved)}",
         f"- Still failing after bakeoff: {len(still_failed)}",
@@ -238,10 +283,9 @@ def write_report(results: list[dict[str, Any]], out_dir: Path, lang: str, psms: 
     for row in sorted(best_rows, key=lambda item: (item["case_order"], item["case"])):
         result = "pass" if row["passed"] else "fail"
         lines.append(
-            "| {case} | {variant}/psm{psm} | {result} | {failed_checks} | {cer:.3f} | {wer:.3f} | {word_ratio:.2f} | {excerpt} |".format(
+            "| {case} | {candidate} | {result} | {failed_checks} | {cer:.3f} | {wer:.3f} | {word_ratio:.2f} | {excerpt} |".format(
                 case=row["case"],
-                variant=row["variant"],
-                psm=row["psm"],
+                candidate=candidate_label(row),
                 result=result,
                 failed_checks=row["failed_checks"],
                 cer=row["cer"],
@@ -260,9 +304,8 @@ def write_report(results: list[dict[str, Any]], out_dir: Path, lang: str, psms: 
             result = "pass" if row["passed"] else "fail"
             checks = "<br>".join(str(check).replace("|", "\\|") for check in row["checks"])
             lines.append(
-                "| {variant}/psm{psm} | {result} | {failed_checks} | {cer:.3f} | {wer:.3f} | {word_ratio:.2f} | {checks} |".format(
-                    variant=row["variant"],
-                    psm=row["psm"],
+                "| {candidate} | {result} | {failed_checks} | {cer:.3f} | {wer:.3f} | {word_ratio:.2f} | {checks} |".format(
+                    candidate=candidate_label(row),
                     result=result,
                     failed_checks=row["failed_checks"],
                     cer=row["cer"],
@@ -284,6 +327,7 @@ def main() -> int:
     lang = args.lang or stress.default_ocr_lang(config)
     psms = split_csv(args.psms) if args.psms else default_psms(config)
     variants = split_csv(args.variants)
+    external = external_backends(args.external_bin)
     if "raw" not in variants:
         variants.insert(0, "raw")
 
@@ -353,7 +397,70 @@ def main() -> int:
                     }
                 )
 
-    write_report(results, out_dir, lang, psms, variants)
+        for backend_name, backend_command in external:
+            ocr_file = out_dir / "ocr" / f"{case.id}.{backend_name}.txt"
+            stderr_file = out_dir / "ocr" / f"{case.id}.{backend_name}.stderr.txt"
+            metrics_file = out_dir / "ocr" / f"{case.id}.{backend_name}.metrics.json"
+            env = os.environ.copy()
+            env["STTS_OCR_METRICS_OUTPUT"] = str(metrics_file)
+            proc = subprocess.run(
+                [
+                    backend_command,
+                    "--image",
+                    str(image),
+                    "--output",
+                    str(ocr_file),
+                    "--lang",
+                    lang,
+                    "--psm",
+                    psms[0],
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+            stderr_file.write_text(proc.stderr, encoding="utf-8")
+            ocr_text = ocr_file.read_text(encoding="utf-8") if ocr_file.exists() else ""
+            if proc.returncode != 0 and not ocr_text:
+                ocr_text = ""
+            cer, wer = stress.error_rates(case.text, ocr_text)
+            route, route_info = stress.detect_route(ocr_text, config)
+            passed, checks, actual_word_ratio = stress.evaluate_case(case, ocr_text, cer, route)
+            if proc.returncode != 0:
+                passed = False
+                checks.append(f"FAIL backend exit code {proc.returncode}")
+            results.append(
+                {
+                    "case_order": case_orders[case.id],
+                    "run_order": len(results) + 1,
+                    "case": case.id,
+                    "difficulty": case.difficulty,
+                    "required": case.required,
+                    "variant": backend_name,
+                    "psm": "",
+                    "image": str(image.relative_to(out_dir)),
+                    "truth_file": str(truth_file.relative_to(out_dir)),
+                    "ocr_file": str(ocr_file.relative_to(out_dir)),
+                    "stderr_file": str(stderr_file.relative_to(out_dir)),
+                    "metrics_file": str(metrics_file.relative_to(out_dir)) if metrics_file.exists() else "",
+                    "cer": cer,
+                    "wer": wer,
+                    "word_ratio": actual_word_ratio,
+                    "failed_checks": failed_check_count(checks),
+                    "checks": checks,
+                    "route": route,
+                    "expected_route": case.expected_route,
+                    "route_info": route_info,
+                    "passed": passed,
+                    "truth_text": case.text,
+                    "ocr_text": ocr_text,
+                    "stderr_text": proc.stderr,
+                }
+            )
+
+    candidate_names = [*variants, *(name for name, _command in external)]
+    write_report(results, out_dir, lang, psms, candidate_names)
 
     by_case: dict[str, list[dict[str, Any]]] = {}
     for row in results:
@@ -368,7 +475,7 @@ def main() -> int:
     for row in sorted(best_rows, key=lambda item: (item["case_order"], item["case"])):
         status = "PASS" if row["passed"] else "FAIL"
         print(
-            f"{status} {row['case']}: best={row['variant']}/psm{row['psm']} "
+            f"{status} {row['case']}: best={candidate_label(row)} "
             f"failed_checks={row['failed_checks']} CER={row['cer']:.3f} "
             f"WER={row['wer']:.3f} ratio={row['word_ratio']:.2f}"
         )
