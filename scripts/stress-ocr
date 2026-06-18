@@ -8,6 +8,7 @@ import base64
 import html
 import json
 import os
+import random
 import re
 import shutil
 import shlex
@@ -36,6 +37,12 @@ BIDI_MARKS = {
     "\u2069",
 }
 
+OVERLAY_EFFECTS = {
+    "thin_rules",
+    "ui_symbol_distractors",
+    "math_symbol_distractors",
+}
+
 
 @dataclass(frozen=True)
 class Case:
@@ -43,6 +50,7 @@ class Case:
     text: str
     expected_route: str
     max_cer: float
+    required: bool = True
     font_size: int = 30
     width: int = 1180
     fill: str = "#111111"
@@ -104,6 +112,40 @@ CASES: tuple[Case, ...] = (
         notes="Code-like text and symbols; useful to reveal punctuation loss.",
     ),
     Case(
+        id="ambiguous_symbol_panel",
+        text=(
+            "Kernel: ready | slot I1l-0O\n"
+            "Flag A/B: [on] retry ≤ 02\n"
+            "Read labels, ignore the control marks."
+        ),
+        expected_route="default",
+        max_cer=0.28,
+        font_size=20,
+        width=1040,
+        fill="#242424",
+        background="#f7f7f4",
+        effects=("resize_90", "thin_rules", "ui_symbol_distractors"),
+        required=False,
+        notes="UI-like panel with ambiguous I/l/1/O/0 text and non-text control symbols nearby.",
+    ),
+    Case(
+        id="math_symbol_noise",
+        text=(
+            "Dose: 0.5 mg ≤ max 1.0 mg\n"
+            "A/B test group: B; delta ~= 2.4%\n"
+            "Keep the sentence, not the decorative glyphs."
+        ),
+        expected_route="default",
+        max_cer=0.32,
+        font_size=21,
+        width=1120,
+        fill="#202020",
+        background="#fafafa",
+        effects=("math_symbol_distractors", "thin_rules", "blur"),
+        required=False,
+        notes="Math-like symbols and glyph clusters around real text.",
+    ),
+    Case(
         id="hebrew_clean_paragraph",
         text=(
             "כן. אושילנד כפר סבא פתוחה בשבת.\n"
@@ -130,6 +172,23 @@ CASES: tuple[Case, ...] = (
         background="#f2f2f2",
         effects=("resize_80", "blur"),
         notes="Small low-contrast Hebrew text.",
+    ),
+    Case(
+        id="hebrew_symbol_clutter",
+        text=(
+            "סימנים ליד הטקסט לא צריכים להיקרא.\n"
+            "המערכת צריכה לשמור על המשפט העברי בלבד.\n"
+            "בדיקה עם מספרים: 10:00-21:00."
+        ),
+        expected_route="hebrew",
+        max_cer=0.30,
+        font_size=22,
+        width=1080,
+        fill="#262626",
+        background="#fbfbf8",
+        effects=("resize_90", "thin_rules", "ui_symbol_distractors"),
+        required=False,
+        notes="Hebrew text surrounded by UI-like symbols that should not become TTS text.",
     ),
     Case(
         id="mixed_hebrew_ui",
@@ -260,6 +319,7 @@ def generate_image(case: Case, path: Path) -> None:
         "28",
     ]
     effects: list[str] = []
+    overlay_effects: list[str] = []
     for effect in case.effects:
         if effect == "blur":
             effects.extend(["-blur", "0x0.7"])
@@ -269,14 +329,91 @@ def generate_image(case: Case, path: Path) -> None:
             effects.extend(["-resize", "75%"])
         elif effect == "resize_80":
             effects.extend(["-resize", "80%"])
+        elif effect == "resize_90":
+            effects.extend(["-resize", "90%"])
         elif effect == "rotate_1":
             effects.extend(["-background", case.background, "-rotate", "1"])
+        elif effect in OVERLAY_EFFECTS:
+            overlay_effects.append(effect)
         else:
             raise ValueError(f"Unknown effect: {effect}")
 
     proc = run([*base, *effects, str(path)])
     if proc.returncode != 0:
         raise RuntimeError(f"Image generation failed for {case.id}:\n{proc.stderr}")
+    for effect in overlay_effects:
+        apply_overlay_effect(case, path, effect)
+
+
+def image_size(path: Path) -> tuple[int, int]:
+    proc = run(["magick", "identify", "-format", "%w %h", str(path)])
+    if proc.returncode != 0:
+        raise RuntimeError(f"Could not inspect image size for {path}:\n{proc.stderr}")
+    width, height = proc.stdout.strip().split()
+    return int(width), int(height)
+
+
+def draw_text_command(x: int, y: int, text: str) -> str:
+    safe = text.replace("\\", "\\\\").replace("'", "\\'")
+    return f"text {x},{y} '{safe}'"
+
+
+def apply_overlay_effect(case: Case, path: Path, effect: str) -> None:
+    width, height = image_size(path)
+    rng = random.Random(f"{case.id}:{effect}")
+    args: list[str] = []
+
+    if effect == "thin_rules":
+        args.extend(["-stroke", "#d2d6cf", "-strokewidth", "1", "-fill", "none"])
+        for _ in range(5):
+            y = rng.randint(18, max(20, height - 18))
+            args.extend(["-draw", f"line 12,{y} {max(24, width - 12)},{y}"])
+        for _ in range(4):
+            x = rng.randint(20, max(24, width - 20))
+            args.extend(["-draw", f"line {x},10 {x},{max(20, height - 10)}"])
+        for _ in range(3):
+            x1 = rng.randint(8, max(10, width // 3))
+            y1 = rng.randint(8, max(10, height // 2))
+            x2 = min(width - 8, x1 + rng.randint(60, 180))
+            y2 = min(height - 8, y1 + rng.randint(22, 58))
+            args.extend(["-draw", f"rectangle {x1},{y1} {x2},{y2}"])
+
+    elif effect == "ui_symbol_distractors":
+        tokens = ["[ ]", "[x]", "::", "||", "!!", "?", "#", "@", "0O", "1lI", "<>", "/\\", "++", "--"]
+        args.extend(["-font", "DejaVu-Sans", "-fill", "#8b918a"])
+        for _ in range(14):
+            token = rng.choice(tokens)
+            size = rng.randint(13, 24)
+            if rng.random() < 0.55:
+                x = rng.choice([rng.randint(6, 80), rng.randint(max(8, width - 130), max(10, width - 45))])
+                y = rng.randint(18, max(20, height - 8))
+            else:
+                x = rng.randint(6, max(8, width - 70))
+                y = rng.choice([rng.randint(16, 36), rng.randint(max(20, height - 34), max(22, height - 8))])
+            args.extend(["-pointsize", str(size), "-draw", draw_text_command(x, y, token)])
+
+    elif effect == "math_symbol_distractors":
+        tokens = ["+", "-", "*", "/", "=", "!=", "<=", ">=", "~=", "()", "[]", "{}", "x2", "O0", "l1", "..."]
+        args.extend(["-font", "DejaVu-Sans", "-fill", "#858585"])
+        for _ in range(20):
+            token = rng.choice(tokens)
+            size = rng.randint(12, 22)
+            if rng.random() < 0.5:
+                x = rng.choice([rng.randint(8, 90), rng.randint(max(10, width - 120), max(12, width - 45))])
+                y = rng.randint(18, max(20, height - 8))
+            else:
+                x = rng.randint(8, max(10, width - 60))
+                y = rng.choice([rng.randint(18, 42), rng.randint(max(20, height - 40), max(22, height - 8))])
+            args.extend(["-pointsize", str(size), "-draw", draw_text_command(x, y, token)])
+
+    else:
+        raise ValueError(f"Unknown overlay effect: {effect}")
+
+    tmp = path.with_suffix(f".{effect}.png")
+    proc = run(["magick", str(path), *args, str(tmp)])
+    if proc.returncode != 0:
+        raise RuntimeError(f"Overlay effect {effect} failed for {case.id}:\n{proc.stderr}")
+    tmp.replace(path)
 
 
 def preprocess_image(input_path: Path, output_path: Path) -> None:
@@ -351,6 +488,8 @@ def detect_route(text: str, config: dict[str, str]) -> tuple[str, dict[str, str]
 
 def write_markdown_report(results: list[dict[str, object]], out_dir: Path, lang: str, psm: str, mode: str) -> None:
     failures = [row for row in results if not row["passed"]]
+    blocking_failures = [row for row in failures if row["required"]]
+    challenge_failures = [row for row in failures if not row["required"]]
     lines = [
         "# OCR Stress Report",
         "",
@@ -360,20 +499,25 @@ def write_markdown_report(results: list[dict[str, object]], out_dir: Path, lang:
         f"- Mode: `{mode}`",
         f"- Cases: {len(results)}",
         f"- Failures: {len(failures)}",
+        f"- Blocking failures: {len(blocking_failures)}",
+        f"- Challenge failures: {len(challenge_failures)}",
         "",
-        "| Case | Mode | CER | WER | Route | Expected Route | Pass | Notes |",
-        "| --- | --- | ---: | ---: | --- | --- | --- | --- |",
+        "| Case | Tier | Mode | CER | WER | Route | Expected Route | Result | Notes |",
+        "| --- | --- | --- | ---: | ---: | --- | --- | --- | --- |",
     ]
     for row in results:
+        tier = "required" if row["required"] else "challenge"
+        result = "pass" if row["passed"] else "FAIL" if row["required"] else "WARN"
         lines.append(
-            "| {case} | {mode} | {cer:.3f} | {wer:.3f} | {route} | {expected_route} | {passed} | {notes} |".format(
+            "| {case} | {tier} | {mode} | {cer:.3f} | {wer:.3f} | {route} | {expected_route} | {result} | {notes} |".format(
                 case=row["case"],
+                tier=tier,
                 mode=row["mode"],
                 cer=row["cer"],
                 wer=row["wer"],
                 route=row["route"],
                 expected_route=row["expected_route"],
-                passed="yes" if row["passed"] else "NO",
+                result=result,
                 notes=str(row["notes"]).replace("|", "\\|"),
             )
         )
@@ -400,12 +544,16 @@ def write_markdown_report(results: list[dict[str, object]], out_dir: Path, lang:
 
 def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str, psm: str, mode: str) -> None:
     failures = [row for row in results if not row["passed"]]
+    blocking_failures = [row for row in failures if row["required"]]
+    challenge_failures = [row for row in failures if not row["required"]]
 
     def esc(value: object) -> str:
         return html.escape(str(value), quote=True)
 
     def status(row: dict[str, object]) -> str:
-        return "pass" if row["passed"] else "fail"
+        if row["passed"]:
+            return "pass"
+        return "fail" if row["required"] else "warn"
 
     def image_data_uri(row: dict[str, object]) -> str:
         image_path = out_dir / str(row["image"])
@@ -418,6 +566,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
         summary_rows.append(
             "<tr>"
             f"<td><a href=\"#{esc(row['case'])}-{esc(row['mode'])}\">{esc(row['case'])}</a></td>"
+            f"<td>{'required' if row['required'] else 'challenge'}</td>"
             f"<td>{esc(row['mode'])}</td>"
             f"<td class=\"num\">{float(row['cer']):.3f}</td>"
             f"<td class=\"num\">{float(row['wer']):.3f}</td>"
@@ -444,6 +593,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
             f"<div><span>WER</span><b>{float(row['wer']):.3f}</b></div>"
             f"<div><span>Route</span><b>{esc(row['route'])}</b><small>expected {esc(row['expected_route'])}</small></div>"
             f"<div><span>Mode</span><b>{esc(row['mode'])}</b></div>"
+            f"<div><span>Tier</span><b>{'required' if row['required'] else 'challenge'}</b></div>"
             "</div>"
             "<div class=\"inspect-grid\">"
             "<figure>"
@@ -485,6 +635,8 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       --line: #d8ddd2;
       --pass: #12633f;
       --pass-bg: #dff3e8;
+      --warn: #8a5a00;
+      --warn-bg: #fff1c7;
       --fail: #9e2b25;
       --fail-bg: #f8dfdc;
       --accent: #365f91;
@@ -585,6 +737,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
       text-transform: uppercase;
     }}
     .pill.pass {{ background: var(--pass-bg); color: var(--pass); }}
+    .pill.warn {{ background: var(--warn-bg); color: var(--warn); }}
     .pill.fail {{ background: var(--fail-bg); color: var(--fail); }}
     .case {{
       padding: 16px;
@@ -690,6 +843,8 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
     <section class="overview" aria-label="Summary">
       <div class="stat"><span>Cases</span><b>{len(results)}</b></div>
       <div class="stat"><span>Failures</span><b>{len(failures)}</b></div>
+      <div class="stat"><span>Blocking Failures</span><b>{len(blocking_failures)}</b></div>
+      <div class="stat"><span>Challenge Warnings</span><b>{len(challenge_failures)}</b></div>
       <div class="stat"><span>OCR Language</span><b>{esc(lang)}</b></div>
       <div class="stat"><span>Mode</span><b>{esc(mode)}</b></div>
     </section>
@@ -698,6 +853,7 @@ def write_html_report(results: list[dict[str, object]], out_dir: Path, lang: str
         <thead>
           <tr>
             <th>Case</th>
+            <th>Tier</th>
             <th>Mode</th>
             <th class="num">CER</th>
             <th class="num">WER</th>
@@ -804,6 +960,7 @@ def main() -> int:
                     "cer": cer,
                     "wer": wer,
                     "max_cer": case.max_cer,
+                    "required": case.required,
                     "route": route,
                     "expected_route": case.expected_route,
                     "route_info": route_info,
@@ -817,18 +974,23 @@ def main() -> int:
 
     write_report(results, out_dir, lang, psm, args.mode)
     failures = [row for row in results if not row["passed"]]
+    blocking_failures = [row for row in failures if row["required"]]
+    challenge_failures = [row for row in failures if not row["required"]]
     print(f"OCR stress artifacts: {out_dir}")
     print(f"Report: {out_dir / 'report.md'}")
     print(f"HTML report: {out_dir / 'report.html'}")
-    print(f"Cases: {len(results)}  Failures: {len(failures)}")
+    print(
+        f"Cases: {len(results)}  Failures: {len(failures)}  "
+        f"Blocking: {len(blocking_failures)}  Challenge warnings: {len(challenge_failures)}"
+    )
     for row in results:
-        status = "PASS" if row["passed"] else "FAIL"
+        status = "PASS" if row["passed"] else "FAIL" if row["required"] else "WARN"
         print(
             f"{status} {row['case']}[{row['mode']}]: "
             f"CER={row['cer']:.3f} WER={row['wer']:.3f} "
             f"route={row['route']} expected={row['expected_route']}"
         )
-    return 1 if failures else 0
+    return 1 if blocking_failures else 0
 
 
 if __name__ == "__main__":

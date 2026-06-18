@@ -135,6 +135,7 @@ def main() -> int:
     confidence_close = pre_conf >= raw_conf - 10
     confidence_better = pre_conf >= raw_conf + 8 and pre_words >= raw_words
     stable_words_better_confidence = pre_words == raw_words and pre_conf >= raw_conf + 2
+    cleaner_high_confidence = pre_words >= args.min_words and pre_words <= raw_words and pre_conf >= raw_conf + 7
     raw_weak = raw_words < args.min_words or raw_conf < args.min_confidence
 
     if (
@@ -143,6 +144,7 @@ def main() -> int:
         and not (recovered_words and confidence_close)
         and not confidence_better
         and not stable_words_better_confidence
+        and not cleaner_high_confidence
     ):
         write_output(output, raw_text)
         print("OCR selected=raw", file=sys.stderr)
